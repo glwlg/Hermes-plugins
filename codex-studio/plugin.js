@@ -27,7 +27,14 @@
  *
  * The Codex Studio pane uses only credential-free route metadata plus the
  * SDK's source-scoped session read/open methods. It never persists or displays
- * endpoints, tokens, passwords, or other connection secrets.
+ * endpoints, tokens, passwords, or other connection secrets. Gateway data stays
+ * on `host.request` / `host.onEvent`; there is no `plugin_api.py` because that
+ * backend is a local-gateway HTTP namespace, not a cross-gateway session bus.
+ *
+ * Extra SDK surfaces on top of the pane:
+ *   - ⌘K palette: refresh sessions, apply Hermes Cold White
+ *   - rebindable keybind: mod+alt+g refreshes the same query
+ *   - status-bar chip: unread / failed-source count, click to refresh
  *
  * Save location:
  *   <HERMES_HOME>/desktop-plugins/codex-studio/plugin.js
@@ -37,7 +44,9 @@
  */
 
 import {
+  atom,
   Button,
+  cn,
   Codicon,
   ContextMenu,
   ContextMenuContent,
@@ -54,14 +63,22 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  EmptyState,
+  ErrorState,
+  GlyphSpinner,
   host,
   Input,
+  KEYBINDS_AREA,
+  PALETTE_AREA,
+  queryClient as pluginQueryClient,
   relativeTime,
   RowButton,
   requestTheme,
   SearchField,
   SessionStatusDot,
+  STATUSBAR_AREAS,
   THEMES_AREA,
+  Tip,
   useQuery,
   useQueryClient,
   useValue
@@ -98,6 +115,7 @@ const GATEWAY_SESSIONS_PREFS_KEY = 'gateway-sessions-preferences-v1'
 const GATEWAY_VIRTUALIZE_THRESHOLD = 120
 const GATEWAY_ROW_ESTIMATE_HEIGHT = 36
 const GATEWAY_VIRTUAL_OVERSCAN = 8
+const PROJECT_SESSION_PREVIEW_LIMIT = 5
 const SESSION_FRESHNESS_EVENT_TYPES = new Set([
   'message.complete',
   'message.start',
@@ -121,6 +139,31 @@ const DEFAULT_GATEWAY_SESSION_PREFERENCES = {
 // older Desktop host renders a contribution one tick after registration.
 let gatewaySessionStorage = null
 let gatewaySessionStorageOwner = null
+const $gatewaySessionLimit = atom(GATEWAY_SESSIONS_LIMIT)
+const $gatewaySessionPrefs = atom(DEFAULT_GATEWAY_SESSION_PREFERENCES)
+const sessionDataRevision = { current: 0 }
+
+function normalizeGatewaySessionPreferences(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : DEFAULT_GATEWAY_SESSION_PREFERENCES
+  return {
+    collapsedKeys: Array.isArray(source.collapsedKeys) ? source.collapsedKeys : [],
+    hideScheduled: typeof source.hideScheduled === 'boolean' ? source.hideScheduled : HIDE_SCHEDULED_SESSIONS_DEFAULT,
+    profileScope: source.profileScope === PROFILE_SCOPE_ALL ? PROFILE_SCOPE_ALL : PROFILE_SCOPE_DEFAULT,
+    search: typeof source.search === 'string' ? source.search : ''
+  }
+}
+
+function readGatewaySessionPreferences() {
+  const stored = gatewaySessionStorage?.get?.(GATEWAY_SESSIONS_PREFS_KEY, DEFAULT_GATEWAY_SESSION_PREFERENCES)
+  return normalizeGatewaySessionPreferences(stored)
+}
+
+function writeGatewaySessionPreferences(next) {
+  const normalized = normalizeGatewaySessionPreferences(next)
+  $gatewaySessionPrefs.set(normalized)
+  gatewaySessionStorage?.set?.(GATEWAY_SESSIONS_PREFS_KEY, normalized)
+  return normalized
+}
 
 const CODEX_THEME = {
   name: THEME_NAME,
@@ -497,6 +540,75 @@ function sessionActivityValue(session) {
 function compareSessions(a, b) {
   const pinnedOrder = Number(sessionPinned(b)) - Number(sessionPinned(a))
   return pinnedOrder || sessionActivityValue(b) - sessionActivityValue(a)
+}
+
+function projectLatestActivity(project) {
+  const sessions = Array.isArray(project?.sessions) ? project.sessions : []
+  let latest = 0
+  for (const session of sessions) {
+    const value = sessionActivityValue(session)
+    if (value > latest) latest = value
+  }
+  return latest
+}
+
+function compareProjects(a, b) {
+  const aHasSessions = (a?.sessions?.length || 0) > 0
+  const bHasSessions = (b?.sessions?.length || 0) > 0
+  if (aHasSessions !== bHasSessions) {
+    return aHasSessions ? -1 : 1
+  }
+
+  if (aHasSessions) {
+    const activityOrder = projectLatestActivity(b) - projectLatestActivity(a)
+    if (activityOrder !== 0) {
+      return activityOrder
+    }
+  } else if (isHomeProject(a) !== isHomeProject(b)) {
+    return isHomeProject(a) ? 1 : -1
+  }
+
+  const labelOrder = projectDisplayLabel(a).localeCompare(projectDisplayLabel(b), undefined, { sensitivity: 'base' })
+  if (labelOrder !== 0) {
+    return labelOrder
+  }
+  const sourceOrder = projectRemoteLabel(a).localeCompare(projectRemoteLabel(b), undefined, { sensitivity: 'base' })
+  if (sourceOrder !== 0) {
+    return sourceOrder
+  }
+  const profileOrder = String(a?.profile || '').localeCompare(String(b?.profile || ''), undefined, { sensitivity: 'base' })
+  return profileOrder || String(a?.key || '').localeCompare(String(b?.key || ''))
+}
+
+function shouldResortProjectsForUserInput(input) {
+  const reason = input && input.reason
+  if (reason === 'refresh' || reason === 'new-chat') {
+    return true
+  }
+  return Boolean(input) && input.previousBusy === false && input.busy === true
+}
+
+function stabilizeProjectOrder(projects, previousKeys, options) {
+  const list = Array.isArray(projects) ? [...projects] : []
+  const previous = Array.isArray(previousKeys) ? previousKeys : []
+  const resort = Boolean(options && options.resort)
+  if (list.length === 0) {
+    return list
+  }
+  if (resort || previous.length === 0) {
+    return list.sort(compareProjects)
+  }
+
+  const byKey = new Map(list.map(project => [project.key, project]))
+  const ordered = []
+  for (const key of previous) {
+    const project = byKey.get(key)
+    if (!project) continue
+    ordered.push(project)
+    byKey.delete(key)
+  }
+  const newcomers = [...byKey.values()].sort(compareProjects)
+  return [...ordered, ...newcomers]
 }
 
 function sessionProfile(session, project) {
@@ -1031,6 +1143,90 @@ function sessionIsScheduled(session) {
   return typeof session?.source === 'string' && session.source.trim().toLowerCase() === 'cron'
 }
 
+function gatewayInboxSummary(groups, hideScheduled = true) {
+  const list = Array.isArray(groups) ? groups : []
+  let failed = 0
+  let loaded = 0
+  let open = 0
+  let pinned = 0
+  let unread = 0
+
+  for (const group of list) {
+    if (group?.error) failed += 1
+    const sessions = Array.isArray(group?.sessions) ? group.sessions : []
+    for (const session of sessions) {
+      if (hideScheduled && sessionIsScheduled(session)) continue
+      loaded += 1
+      if (sessionUnread(session)) unread += 1
+      if (sessionActive(session)) open += 1
+      if (sessionPinned(session)) pinned += 1
+    }
+  }
+
+  return { failed, loaded, open, pinned, unread }
+}
+
+function refreshGatewaySessionQueries({ refreshRoutes = true } = {}) {
+  if (refreshRoutes) {
+    gatewayRouteCache.at = 0
+    clearGatewayProjectTreeCache()
+  }
+  if (typeof pluginQueryClient?.refetchQueries !== 'function') {
+    return Promise.resolve()
+  }
+  return pluginQueryClient.refetchQueries({ queryKey: GATEWAY_SESSIONS_KEY })
+}
+
+function subscribeGatewaySessionEvents() {
+  if (typeof host.onEvent !== 'function' || typeof pluginQueryClient?.refetchQueries !== 'function') {
+    return () => {}
+  }
+
+  let timer = 0
+  const pendingEvents = new Map()
+  const refreshFromEvent = event => {
+    if (!event || !SESSION_FRESHNESS_EVENT_TYPES.has(event.type)) {
+      return
+    }
+    const routeKey = eventRouteKey(event)
+    const sessionId = eventSessionId(event)
+    if (!routeKey) {
+      return
+    }
+    const eventKey = `${routeKey}::${sessionId || 'route'}::${event.type}`
+    const pendingEvent = pendingEvents.get(eventKey)
+    if (!pendingEvent || eventTimestampMs(event) >= eventTimestampMs(pendingEvent)) {
+      pendingEvents.set(eventKey, event)
+    }
+    if (timer) {
+      window.clearTimeout(timer)
+    }
+    timer = window.setTimeout(() => {
+      timer = 0
+      const events = [...pendingEvents.values()]
+      pendingEvents.clear()
+      sessionDataRevision.current += 1
+      const profileScope = $gatewaySessionPrefs.get().profileScope
+      const sessionsQueryKey = [...GATEWAY_SESSIONS_KEY, profileScope]
+      void pluginQueryClient.cancelQueries({ queryKey: sessionsQueryKey })
+      const current = pluginQueryClient.getQueryData(sessionsQueryKey)
+      const patchedGroups = patchSessionGroupsFromEvents(current?.groups, events)
+      if (patchedGroups !== current?.groups) {
+        pluginQueryClient.setQueryData(sessionsQueryKey, value => value ? { ...value, groups: patchSessionGroupsFromEvents(value.groups, events) } : value)
+      }
+      void pluginQueryClient.refetchQueries({ queryKey: sessionsQueryKey, type: 'active' })
+    }, GATEWAY_EVENT_REFRESH_DEBOUNCE_MS)
+  }
+
+  const dispose = host.onEvent('*', refreshFromEvent)
+  return () => {
+    if (timer) {
+      window.clearTimeout(timer)
+    }
+    dispose?.()
+  }
+}
+
 function eventTimestampMs(event, fallback = 0) {
   const payload = event?.payload && typeof event.payload === 'object' ? event.payload : null
   const value = payload?.timestamp ?? event?.timestamp
@@ -1123,11 +1319,6 @@ function projectGroupsForGatewayGroup(group, hideScheduled) {
       ...project,
       sessions: [...project.sessions].sort(compareSessions)
     }))
-    .sort((a, b) => {
-      if (isHomeProject(a)) return 1
-      if (isHomeProject(b)) return -1
-      return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
-    })
 }
 
 function normalizeSessionPage(data) {
@@ -1428,14 +1619,27 @@ function gatewayVirtualWindow(totalRows, scrollTop, viewportHeight) {
   }
 }
 
-function gatewayRenderRows(projects, collapsed) {
+function gatewayRenderRows(projects, collapsed, revealed = new Set()) {
   const rows = []
   for (const project of projects) {
     rows.push({ key: `project:${project.key}`, type: 'project', project })
-    if (!collapsed.has(project.key)) {
-      for (const session of project.sessions) {
-        rows.push({ key: `session:${project.key}:${session.id}`, type: 'session', project, session })
-      }
+    if (collapsed.has(project.key)) {
+      continue
+    }
+
+    const sessions = Array.isArray(project.sessions) ? project.sessions : []
+    const showAll = revealed.has(project.key) || sessions.length <= PROJECT_SESSION_PREVIEW_LIMIT
+    const visible = showAll ? sessions : sessions.slice(0, PROJECT_SESSION_PREVIEW_LIMIT)
+    for (const session of visible) {
+      rows.push({ key: `session:${project.key}:${session.id}`, type: 'session', project, session })
+    }
+    if (!showAll) {
+      rows.push({
+        key: `more:${project.key}`,
+        type: 'more',
+        project,
+        remaining: sessions.length - visible.length
+      })
     }
   }
   return rows
@@ -1561,6 +1765,23 @@ function gatewaySessionRow(project, session, focusedStoredSessionId, focusedSess
   return jsx(SessionContextMenu, { children: row, onChanged: applySessionChange, project, session }, sessionKey)
 }
 
+function gatewayProjectMoreRow(project, remaining, reveal) {
+  const count = Math.max(0, Number(remaining) || 0)
+  return jsx('div', {
+    className: 'px-1.5',
+    style: { marginLeft: '1.5rem', width: 'calc(100% - 1.5rem)' },
+    children: jsx(Button, {
+      'aria-label': `展开显示 ${projectDisplayLabel(project)} 的另外 ${count} 个会话`,
+      className: 'h-7 w-full justify-center rounded-md border border-(--ui-stroke-tertiary) bg-transparent text-[0.62rem] text-(--ui-text-quaternary) hover:bg-(--ui-row-hover-background) hover:text-foreground',
+      onClick: () => reveal(project.key),
+      size: 'xs',
+      title: `还有 ${count} 个会话`,
+      variant: 'ghost',
+      children: '展开显示'
+    })
+  }, `more:${project.key}`)
+}
+
 function eventRouteKey(event) {
   const connectionId = String(event?.connectionId || '').trim()
   const profile = String(event?.profile || '').trim()
@@ -1642,68 +1863,37 @@ function mergeGatewaySessionGroup(current, incoming) {
   }
 }
 
-function GatewaySessionsPane() {
-  const queryClient = useQueryClient()
-  const storedPreferences = useMemo(() => {
-    const value = gatewaySessionStorage?.get?.(GATEWAY_SESSIONS_PREFS_KEY, DEFAULT_GATEWAY_SESSION_PREFERENCES)
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : DEFAULT_GATEWAY_SESSION_PREFERENCES
-  }, [])
-  const [search, setSearch] = useState(() => typeof storedPreferences.search === 'string' ? storedPreferences.search : '')
-  const [collapsed, setCollapsed] = useState(() => new Set(Array.isArray(storedPreferences.collapsedKeys) ? storedPreferences.collapsedKeys : []))
-  const [opening, setOpening] = useState('')
-  const [hideScheduled, setHideScheduled] = useState(() => typeof storedPreferences.hideScheduled === 'boolean' ? storedPreferences.hideScheduled : HIDE_SCHEDULED_SESSIONS_DEFAULT)
-  const [profileScope, setProfileScope] = useState(() => storedPreferences.profileScope === PROFILE_SCOPE_ALL ? PROFILE_SCOPE_ALL : PROFILE_SCOPE_DEFAULT)
-  const [sessionLimit, setSessionLimit] = useState(GATEWAY_SESSIONS_LIMIT)
-  const [sessionFilter, setSessionFilter] = useState('all')
-  const [retryingSourceKey, setRetryingSourceKey] = useState('')
-  const sessionsScrollRef = useRef(null)
-  const [scrollTop, setScrollTop] = useState(0)
-  const [viewportHeight, setViewportHeight] = useState(640)
-  const sessionDataRevisionRef = useRef(0)
-  const previousSessionLimitRef = useRef(sessionLimit)
-  const sessionsQueryKey = useMemo(() => [...GATEWAY_SESSIONS_KEY, profileScope], [profileScope])
-  const focusedStoredSessionId = useValue(host.state.focusedStoredSessionId)
-  const focusedSessionOwner = useValue(host.state.focusedSessionOwner)
-
-  useEffect(() => {
-    const element = sessionsScrollRef.current
-    if (!element || typeof ResizeObserver === 'undefined') {
-      return undefined
+function fetchSharedGatewaySessionGroups(profileScope) {
+  const queryClient = pluginQueryClient
+  const sessionsQueryKey = [...GATEWAY_SESSIONS_KEY, profileScope]
+  return async () => {
+    const revision = sessionDataRevision.current
+    const incoming = await fetchGatewaySessionGroups(profileScope, $gatewaySessionLimit.get())
+    const current = queryClient?.getQueryData?.(sessionsQueryKey)
+    if (revision !== sessionDataRevision.current && current?.groups) {
+      return current
     }
-    const update = () => setViewportHeight(Math.max(1, element.clientHeight || 640))
-    update()
-    const observer = new ResizeObserver(update)
-    observer.observe(element)
-    return () => observer.disconnect()
-  }, [])
+    if (!current?.groups) {
+      return incoming
+    }
+    const currentByKey = new Map(current.groups.map(group => [group.key, group]))
+    return {
+      ...incoming,
+      groups: incoming.groups.map(group => mergeGatewaySessionGroup(currentByKey.get(group.key), group))
+    }
+  }
+}
 
-  useEffect(() => {
-    gatewaySessionStorage?.set?.(GATEWAY_SESSIONS_PREFS_KEY, {
-      collapsedKeys: [...collapsed].slice(-200),
-      hideScheduled,
-      profileScope,
-      search
-    })
-  }, [collapsed, hideScheduled, profileScope, search])
-
+function useGatewaySessionsQuery() {
+  const queryClient = useQueryClient()
+  const prefs = useValue($gatewaySessionPrefs)
+  const sessionLimit = useValue($gatewaySessionLimit)
+  const profileScope = prefs.profileScope
+  const sessionsQueryKey = useMemo(() => [...GATEWAY_SESSIONS_KEY, profileScope], [profileScope])
+  const previousSessionLimitRef = useRef(sessionLimit)
   const sessionsQuery = useQuery({
     queryKey: sessionsQueryKey,
-    queryFn: async () => {
-      const revision = sessionDataRevisionRef.current
-      const incoming = await fetchGatewaySessionGroups(profileScope, sessionLimit)
-      const current = queryClient.getQueryData(sessionsQueryKey)
-      if (revision !== sessionDataRevisionRef.current && current?.groups) {
-        return current
-      }
-      if (!current?.groups) {
-        return incoming
-      }
-      const currentByKey = new Map(current.groups.map(group => [group.key, group]))
-      return {
-        ...incoming,
-        groups: incoming.groups.map(group => mergeGatewaySessionGroup(currentByKey.get(group.key), group))
-      }
-    },
+    queryFn: fetchSharedGatewaySessionGroups(profileScope),
     refetchInterval: false,
     refetchIntervalInBackground: false,
     refetchOnReconnect: false,
@@ -1719,53 +1909,90 @@ function GatewaySessionsPane() {
     void queryClient.refetchQueries({ queryKey: sessionsQueryKey, type: 'active' })
   }, [queryClient, sessionLimit, sessionsQueryKey])
 
+  return { prefs, profileScope, sessionLimit, sessionsQuery, sessionsQueryKey }
+}
+
+function GatewayInboxChip() {
+  const { prefs, sessionsQuery } = useGatewaySessionsQuery()
+  const inbox = gatewayInboxSummary(sessionsQuery.data?.groups, prefs.hideScheduled)
+  if (!sessionsQuery.data) {
+    return null
+  }
+
+  const label = inbox.failed
+    ? `${inbox.failed} gateway source${inbox.failed === 1 ? '' : 's'} unavailable`
+    : inbox.unread
+      ? `${inbox.unread} unread across gateways`
+      : `${inbox.loaded} sessions across gateways`
+
+  return jsx(Tip, {
+    label,
+    children: jsxs('button', {
+      className: cn(
+        'inline-flex h-full items-center gap-1 rounded-none px-1.5 text-[0.6875rem] tabular-nums transition-colors',
+        'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+      ),
+      onClick: () => void refreshGatewaySessionQueries(),
+      type: 'button',
+      children: [
+        jsx(Codicon, { name: inbox.failed ? 'warning' : 'comment-discussion', size: '0.7rem' }),
+        jsx('span', { children: inbox.failed ? inbox.failed : (inbox.unread || inbox.loaded) })
+      ]
+    })
+  })
+}
+
+function GatewaySessionsPane() {
+  const queryClient = useQueryClient()
+  const { prefs, profileScope, sessionLimit, sessionsQuery, sessionsQueryKey } = useGatewaySessionsQuery()
+  const search = prefs.search
+  const hideScheduled = prefs.hideScheduled
+  const collapsed = useMemo(() => new Set(prefs.collapsedKeys), [prefs.collapsedKeys])
+  const [revealedProjects, setRevealedProjects] = useState(() => new Set())
+  const [opening, setOpening] = useState('')
+  const [sessionFilter, setSessionFilter] = useState('all')
+  const [retryingSourceKey, setRetryingSourceKey] = useState('')
+  const sessionsScrollRef = useRef(null)
+  const [scrollTop, setScrollTop] = useState(0)
+  const [viewportHeight, setViewportHeight] = useState(640)
+  const focusedStoredSessionId = useValue(host.state.focusedStoredSessionId)
+  const focusedSessionOwner = useValue(host.state.focusedSessionOwner)
+  const focusedBusy = useValue(host.state.busy)
+  const projectOrderKeysRef = useRef([])
+  const lastProjectSortEpochRef = useRef(-1)
+  const previousBusyRef = useRef(false)
+  const [projectSortEpoch, setProjectSortEpoch] = useState(0)
+
+  const persistPrefs = patch => {
+    writeGatewaySessionPreferences({
+      ...prefs,
+      ...patch
+    })
+  }
+
   useEffect(() => {
-    if (typeof host.onEvent !== 'function') {
+    const element = sessionsScrollRef.current
+    if (!element || typeof ResizeObserver === 'undefined') {
       return undefined
     }
+    const update = () => setViewportHeight(Math.max(1, element.clientHeight || 640))
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
 
-    let timer = 0
-    const pendingEvents = new Map()
-    const refreshFromEvent = event => {
-      if (!event || !SESSION_FRESHNESS_EVENT_TYPES.has(event.type)) {
-        return
-      }
-      const routeKey = eventRouteKey(event)
-      const sessionId = eventSessionId(event)
-      if (!routeKey) {
-        return
-      }
-      const eventKey = `${routeKey}::${sessionId || 'route'}::${event.type}`
-      const pendingEvent = pendingEvents.get(eventKey)
-      if (!pendingEvent || eventTimestampMs(event) >= eventTimestampMs(pendingEvent)) {
-        pendingEvents.set(eventKey, event)
-      }
-      if (timer) {
-        window.clearTimeout(timer)
-      }
-      timer = window.setTimeout(() => {
-        timer = 0
-        const events = [...pendingEvents.values()]
-        pendingEvents.clear()
-        sessionDataRevisionRef.current += 1
-        void queryClient.cancelQueries({ queryKey: sessionsQueryKey })
-        const current = queryClient.getQueryData(sessionsQueryKey)
-        const patchedGroups = patchSessionGroupsFromEvents(current?.groups, events)
-        if (patchedGroups !== current?.groups) {
-          queryClient.setQueryData(sessionsQueryKey, value => value ? { ...value, groups: patchSessionGroupsFromEvents(value.groups, events) } : value)
-        }
-        void queryClient.refetchQueries({ queryKey: sessionsQueryKey, type: 'active' })
-      }, GATEWAY_EVENT_REFRESH_DEBOUNCE_MS)
-    }
+  useEffect(() => {
+    projectOrderKeysRef.current = []
+    lastProjectSortEpochRef.current = -1
+  }, [sessionsQueryKey])
 
-    const dispose = host.onEvent('*', refreshFromEvent)
-    return () => {
-      if (timer) {
-        window.clearTimeout(timer)
-      }
-      dispose?.()
+  useEffect(() => {
+    if (shouldResortProjectsForUserInput({ previousBusy: previousBusyRef.current, busy: focusedBusy })) {
+      setProjectSortEpoch(current => current + 1)
     }
-  }, [queryClient, sessionsQueryKey])
+    previousBusyRef.current = Boolean(focusedBusy)
+  }, [focusedBusy])
 
   const sourceGroups = sessionsQuery.data?.groups || []
   const loadedSessionCount = sourceGroups.reduce((count, group) => count + group.sessions.length, 0)
@@ -1777,9 +2004,10 @@ function GatewaySessionsPane() {
   // Groups are only a transport shape. The UI deliberately flattens every
   // route's projects into one list; route metadata stays on each project so a
   // same-named project from two gateways cannot open the wrong session.
-  const projects = useMemo(() => {
-    const needle = search.trim().toLowerCase()
-    return sourceGroups
+  // Project *order* is sticky after first paint: background last_active
+  // patches must not reshuffle the rail while two chats stream at once.
+  const unfilteredProjects = useMemo(() => (
+    sourceGroups
       .flatMap(group => projectGroupsForGatewayGroup(group, hideScheduled))
       .map(project => {
         const displayLabel = projectDisplayLabel(project)
@@ -1792,42 +2020,55 @@ function GatewaySessionsPane() {
           remoteLabel,
           sourceLabel,
           profile,
-          sessions: project.sessions
-            .filter(session => {
-              if (!sessionMatchesFilter(session, sessionFilter)) {
-                return false
-              }
-              if (!needle) {
-                return true
-              }
-              return `${sessionRowTitle(session)} ${session.preview || ''} ${displayLabel} ${remoteLabel} ${profile} ${sourceLabel}`
-                .toLowerCase()
-                .includes(needle)
-            })
-            .sort(compareSessions)
+          sessions: [...project.sessions].sort(compareSessions)
         }
       })
+  ), [hideScheduled, sourceGroups])
+
+  const visibleProjects = useMemo(() => {
+    const needle = search.trim().toLowerCase()
+    return unfilteredProjects
+      .map(project => ({
+        ...project,
+        sessions: project.sessions.filter(session => {
+          if (!sessionMatchesFilter(session, sessionFilter)) {
+            return false
+          }
+          if (!needle) {
+            return true
+          }
+          return `${sessionRowTitle(session)} ${session.preview || ''} ${project.displayLabel} ${project.remoteLabel} ${project.profile} ${project.sourceLabel}`
+            .toLowerCase()
+            .includes(needle)
+        })
+      }))
       .filter(project => project.sessions.length > 0 || !needle)
-      .sort((a, b) => {
-        if (isHomeProject(a) !== isHomeProject(b)) {
-          return isHomeProject(a) ? 1 : -1
-        }
-        const labelOrder = projectDisplayLabel(a).localeCompare(projectDisplayLabel(b), undefined, { sensitivity: 'base' })
-        if (labelOrder !== 0) {
-          return labelOrder
-        }
-        const sourceOrder = projectRemoteLabel(a).localeCompare(projectRemoteLabel(b), undefined, { sensitivity: 'base' })
-        if (sourceOrder !== 0) {
-          return sourceOrder
-        }
-        const profileOrder = String(a.profile || '').localeCompare(String(b.profile || ''), undefined, { sensitivity: 'base' })
-        return profileOrder || a.key.localeCompare(b.key)
-      })
-  }, [hideScheduled, search, sessionFilter, sourceGroups])
+  }, [search, sessionFilter, unfilteredProjects])
+
+  const projects = useMemo(() => {
+    const known = new Set(unfilteredProjects.map(project => project.key))
+    const previousKeys = projectOrderKeysRef.current.filter(key => known.has(key))
+    const resort = lastProjectSortEpochRef.current !== projectSortEpoch || previousKeys.length === 0
+    const orderedAll = stabilizeProjectOrder(unfilteredProjects, previousKeys, { resort })
+    lastProjectSortEpochRef.current = projectSortEpoch
+    projectOrderKeysRef.current = orderedAll.map(project => project.key)
+    const visibleByKey = new Map(visibleProjects.map(project => [project.key, project]))
+    return orderedAll.map(project => visibleByKey.get(project.key)).filter(Boolean)
+  }, [projectSortEpoch, unfilteredProjects, visibleProjects])
 
   const unavailableSources = sourceGroups.filter(group => group.error)
 
-  const renderRows = useMemo(() => gatewayRenderRows(projects, collapsed), [collapsed, projects])
+  const revealedForRender = useMemo(() => {
+    if (search.trim()) {
+      return new Set(projects.map(project => project.key))
+    }
+    return revealedProjects
+  }, [projects, revealedProjects, search])
+
+  const renderRows = useMemo(
+    () => gatewayRenderRows(projects, collapsed, revealedForRender),
+    [collapsed, projects, revealedForRender]
+  )
 
   const renderedRows = useMemo(() => {
     if (renderRows.length <= GATEWAY_VIRTUALIZE_THRESHOLD) {
@@ -1894,10 +2135,23 @@ function GatewaySessionsPane() {
   }
 
   const toggle = key => {
-    setCollapsed(current => {
+    const next = new Set(collapsed)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    persistPrefs({ collapsedKeys: [...next].slice(-200) })
+    setRevealedProjects(current => {
+      if (!current.has(key)) return current
+      const revealed = new Set(current)
+      revealed.delete(key)
+      return revealed
+    })
+  }
+
+  const revealProjectSessions = key => {
+    setRevealedProjects(current => {
+      if (current.has(key)) return current
       const next = new Set(current)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
+      next.add(key)
       return next
     })
   }
@@ -1963,6 +2217,7 @@ function GatewaySessionsPane() {
           try { release?.() } catch {}
         })
       void queryClient.refetchQueries({ queryKey: sessionsQueryKey, type: 'active' })
+      setProjectSortEpoch(current => current + 1)
     } catch (error) {
       host.notify({
         kind: 'error',
@@ -1976,11 +2231,8 @@ function GatewaySessionsPane() {
   }
 
   const refresh = ({ refreshRoutes = true } = {}) => {
-    if (refreshRoutes) {
-      gatewayRouteCache.at = 0
-      clearGatewayProjectTreeCache()
-    }
-    void queryClient.refetchQueries({ queryKey: sessionsQueryKey, type: 'active' })
+    setProjectSortEpoch(current => current + 1)
+    void refreshGatewaySessionQueries({ refreshRoutes })
   }
 
   const retryGatewaySource = async group => {
@@ -1997,9 +2249,9 @@ function GatewaySessionsPane() {
     ]])
     try {
       await queryClient.cancelQueries({ queryKey: sessionsQueryKey })
-      const revision = sessionDataRevisionRef.current
+      const revision = sessionDataRevision.current
       const nextGroup = await fetchGatewaySessionGroup(group.route, sessionLimit, sourceById)
-      if (revision !== sessionDataRevisionRef.current) {
+      if (revision !== sessionDataRevision.current) {
         void queryClient.refetchQueries({ queryKey: sessionsQueryKey, type: 'active' })
         return
       }
@@ -2021,7 +2273,7 @@ function GatewaySessionsPane() {
       refresh({ refreshRoutes: false })
       return
     }
-    sessionDataRevisionRef.current += 1
+    sessionDataRevision.current += 1
     void queryClient.cancelQueries({ queryKey: sessionsQueryKey })
     queryClient.setQueryData(sessionsQueryKey, current => {
       if (!current || !Array.isArray(current.groups)) {
@@ -2036,17 +2288,28 @@ function GatewaySessionsPane() {
   }
 
   if (sessionsQuery.isLoading && sourceGroups.length === 0) {
-    return jsx('div', { className: 'flex h-full items-center justify-center bg-(--ui-sidebar-surface-background) p-4 text-xs text-(--ui-text-tertiary)', children: 'Loading sessions…' })
+    return jsxs('div', {
+      className: 'flex h-full flex-col items-center justify-center gap-2 bg-(--ui-sidebar-surface-background) p-4 text-(--ui-text-tertiary)',
+      children: [
+        jsx(GlyphSpinner, { ariaLabel: 'Loading sessions', className: 'text-sm' }, 'spinner'),
+        jsx(EmptyState, {
+          className: 'min-h-0',
+          description: 'Reading sessions from every available gateway.',
+          title: 'Loading sessions…'
+        }, 'empty')
+      ]
+    })
   }
 
   if (sessionsQuery.error && sourceGroups.length === 0) {
-    return jsxs('div', {
-      className: 'flex h-full flex-col items-center justify-center gap-2 bg-(--ui-sidebar-surface-background) p-4 text-center text-xs text-(--ui-text-tertiary)',
-      children: [
-        jsx(Codicon, { name: 'warning', size: '1.1rem' }, 'warning'),
-        jsx('span', { children: 'Gateway sessions are unavailable.' }, 'message'),
-        jsx(Button, { onClick: refresh, size: 'xs', variant: 'ghost', children: 'Retry' }, 'retry')
-      ]
+    return jsx('div', {
+      className: 'flex h-full items-center justify-center bg-(--ui-sidebar-surface-background) p-4',
+      children: jsxs(ErrorState, {
+        className: 'max-w-xs',
+        description: 'Gateway sessions are unavailable.',
+        title: 'Codex Studio',
+        children: jsx(Button, { onClick: refresh, size: 'xs', variant: 'ghost', children: 'Retry' }, 'retry')
+      })
     })
   }
 
@@ -2065,7 +2328,7 @@ function GatewaySessionsPane() {
           jsx('select', {
             'aria-label': 'Profile scope',
             className: 'h-6 max-w-28 rounded border border-(--ui-stroke-tertiary) bg-transparent px-1 text-[0.65rem] text-foreground',
-            onChange: event => setProfileScope(event.target.value),
+            onChange: event => persistPrefs({ profileScope: event.target.value }),
             title: profileScope === PROFILE_SCOPE_ALL ? 'Showing all profiles' : 'Showing default profile',
             value: profileScope,
             children: [
@@ -2076,7 +2339,7 @@ function GatewaySessionsPane() {
           jsx(Button, {
             'aria-label': hideScheduled ? 'Show scheduled sessions' : 'Hide scheduled sessions',
             className: 'size-6',
-            onClick: () => setHideScheduled(current => !current),
+            onClick: () => persistPrefs({ hideScheduled: !hideScheduled }),
             size: 'icon-xs',
             title: hideScheduled ? 'Show scheduled sessions' : 'Hide scheduled sessions',
             variant: hideScheduled ? 'secondary' : 'ghost',
@@ -2085,7 +2348,7 @@ function GatewaySessionsPane() {
           jsx(Button, { 'aria-label': 'Refresh gateway sessions', className: 'size-6', onClick: refresh, size: 'icon-xs', variant: 'ghost', children: jsx(Codicon, { name: 'refresh', size: '0.8rem', spinning: sessionsQuery.isFetching }) }, 'refresh')
         ]
       }, 'header'),
-      jsx(SearchField, { 'aria-label': 'Search gateway sessions', containerClassName: 'mx-3 mt-1 w-auto', onChange: setSearch, placeholder: 'Search sessions', value: search }, 'search'),
+      jsx(SearchField, { 'aria-label': 'Search gateway sessions', containerClassName: 'mx-3 mt-1 w-auto', onChange: value => persistPrefs({ search: value }), placeholder: 'Search sessions', value: search }, 'search'),
       jsxs('div', {
         className: 'flex shrink-0 flex-wrap gap-1 px-2 pt-1.5',
         children: [
@@ -2127,7 +2390,11 @@ function GatewaySessionsPane() {
         ]
       }, 'unavailable'),
       projects.length === 0
-        ? jsx('div', { className: 'flex flex-1 items-center justify-center p-4 text-center text-xs text-(--ui-text-tertiary)', children: search ? 'No matching sessions.' : 'No sessions found.' }, 'empty')
+        ? jsx(EmptyState, {
+            className: 'flex-1 min-h-0',
+            description: search ? 'Try a different title, project, or gateway name.' : 'Create a chat from a project header, or wait for an existing session to appear.',
+            title: search ? 'No matching sessions.' : 'No sessions found.'
+          }, 'empty')
         : jsx('div', {
             className: 'min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 pb-3 pt-2',
             onScroll: handleSessionsScroll,
@@ -2136,13 +2403,15 @@ function GatewaySessionsPane() {
               renderedRows.topSpacer > 0 && jsx('div', { 'aria-hidden': true, style: { height: renderedRows.topSpacer } }, 'virtual-top'),
               ...renderedRows.rows.map(renderRow => renderRow.type === 'project'
                 ? gatewayProjectHeaderRow(renderRow.project, collapsed, toggle, newChat)
-                : gatewaySessionRow(renderRow.project, renderRow.session, focusedStoredSessionId, focusedSessionOwner, opening, open, applySessionChange)),
+                : renderRow.type === 'more'
+                  ? gatewayProjectMoreRow(renderRow.project, renderRow.remaining, revealProjectSessions)
+                  : gatewaySessionRow(renderRow.project, renderRow.session, focusedStoredSessionId, focusedSessionOwner, opening, open, applySessionChange)),
               renderedRows.bottomSpacer > 0 && jsx('div', { 'aria-hidden': true, style: { height: renderedRows.bottomSpacer } }, 'virtual-bottom'),
               hasMoreSessions && jsx('div', {
                 className: 'flex justify-center px-2 py-2',
                 children: jsx(Button, {
                   disabled: sessionsQuery.isFetching,
-                  onClick: () => setSessionLimit(nextSessionLimit),
+                  onClick: () => $gatewaySessionLimit.set(nextSessionLimit),
                   size: 'xs',
                   variant: 'ghost',
                   children: sessionsQuery.isFetching
@@ -2226,10 +2495,12 @@ function createElementStyleOwner() {
 export default {
   id: ID,
   name: 'Codex Studio',
-  description: 'Codex Studio: Cold White theme and a cross-gateway session panel.',
+  description: 'Codex Studio: Cold White theme, a cross-gateway session pane, command palette, and unread status chip.',
   register(ctx) {
     gatewaySessionStorage = ctx.storage
     gatewaySessionStorageOwner = ctx
+    $gatewaySessionPrefs.set(readGatewaySessionPreferences())
+    ctx.onDispose(subscribeGatewaySessionEvents())
 
     ctx.register({
       id: 'theme',
@@ -2252,6 +2523,52 @@ export default {
       },
       order: 85,
       render: () => jsx(GatewaySessionsPane, {})
+    })
+
+    ctx.register({
+      id: 'inbox',
+      area: STATUSBAR_AREAS.right,
+      order: 86,
+      render: () => jsx(GatewayInboxChip, {})
+    })
+
+    ctx.register({
+      id: 'refresh-palette',
+      area: PALETTE_AREA,
+      data: {
+        id: 'codex-studio.refresh',
+        action: 'codex-studio.refresh',
+        label: 'Codex Studio: Refresh sessions',
+        keywords: ['codex', 'studio', 'gateway', 'sessions', 'refresh', 'reload'],
+        run: () => void refreshGatewaySessionQueries()
+      }
+    })
+
+    ctx.register({
+      id: 'theme-palette',
+      area: PALETTE_AREA,
+      data: {
+        id: 'codex-studio.theme',
+        label: 'Codex Studio: Apply Hermes Cold White',
+        keywords: ['codex', 'studio', 'theme', 'cold', 'white', 'light'],
+        run: () => {
+          if (requestTheme(THEME_NAME)) {
+            ctx.storage.set('theme-revision', THEME_REVISION)
+          }
+        }
+      }
+    })
+
+    ctx.register({
+      id: 'refresh-keybind',
+      area: KEYBINDS_AREA,
+      data: {
+        id: 'codex-studio.refresh',
+        category: 'view',
+        defaults: ['mod+alt+g'],
+        label: 'Codex Studio: Refresh sessions',
+        run: () => void refreshGatewaySessionQueries()
+      }
     })
 
     const root = typeof document === 'undefined' ? null : document.documentElement
