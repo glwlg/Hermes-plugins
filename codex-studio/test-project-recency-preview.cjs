@@ -35,7 +35,7 @@ assert.match(source, /px-2 py-1\.5/, 'toggle padding must match the session titl
 assert.doesNotMatch(source, /function gatewayProjectMoreRow\(/)
 assert.doesNotMatch(source, /加载更多（已加载/, 'global source pagination must not compete with per-project expand')
 assert.doesNotMatch(source, /\$gatewaySessionLimit\.set\(nextSessionLimit\)/, 'the pane must not grow the shared session window from a footer button')
-assert.match(source, /hiddenLoaded > 0/, 'expand is only for already-loaded sessions still hidden behind the preview')
+assert.match(source, /remaining > 0/, 'expand is shown only when the authoritative project count exceeds visible rows')
 assert.match(source, /type: 'pin-divider'/, 'pinned and unpinned sessions must be separated by a thin divider')
 assert.match(source, /data-session-status/, 'status marks belong in the trailing action slot, not the title lead')
 assert.match(source, /data-session-menu/, 'the kebab must occupy the same trailing slot as the status mark')
@@ -101,10 +101,11 @@ assert.deepEqual(
 
 assert.equal(context.api.projectLatestActivity(newer), 50000)
 assert.equal(context.api.projectLatestActivity(emptyA), 0)
+assert.equal(context.api.projectLatestActivity({ sessions: [], lastActive: 90 }), 90000, 'tree lastActive must drive project rank even when only a preview is mounted')
 
 const seven = Array.from({ length: 7 }, (_, index) => ({ id: `s${index}`, last_active: 100 - index }))
 const previewRows = context.api.gatewayRenderRows(
-  [{ key: 'p1', sessions: seven }],
+  [{ key: 'p1', sessionCount: 7, sessions: seven.slice(0, 5), loadStatus: 'idle' }],
   new Set()
 )
 assert.deepEqual(
@@ -118,7 +119,27 @@ assert.deepEqual(
     ['session', 's4'],
     ['more', 2]
   ],
-  'an expanded project must preview five sessions and hide the rest'
+  'an authoritative project preview must advertise its exact remaining count'
+)
+
+const loadingRows = context.api.gatewayRenderRows(
+  [{ key: 'p1', sessionCount: 7, sessions: seven.slice(0, 5), loadStatus: 'loading' }],
+  new Set(),
+  new Set(['p1'])
+)
+assert.deepEqual(
+  JSON.parse(JSON.stringify(loadingRows.map(row => row.type))),
+  ['project', 'session', 'session', 'session', 'session', 'session', 'project-loading', 'collapse']
+)
+
+const errorRows = context.api.gatewayRenderRows(
+  [{ key: 'p1', sessionCount: 7, sessions: seven.slice(0, 5), loadStatus: 'error' }],
+  new Set(),
+  new Set(['p1'])
+)
+assert.deepEqual(
+  JSON.parse(JSON.stringify(errorRows.map(row => row.type))),
+  ['project', 'session', 'session', 'session', 'session', 'session', 'project-error', 'collapse']
 )
 
 const revealedRows = context.api.gatewayRenderRows(
@@ -274,5 +295,26 @@ assert.deepEqual(
   ['quiet', 'loud', 'empty', 'stranger'],
   'a newly seen project appends without reshuffling the painted order'
 )
+
+const variableNames = ['gatewayRowHeight', 'gatewayVirtualWindow']
+const variableContext = { GATEWAY_VIRTUAL_OVERSCAN: 0 }
+vm.createContext(variableContext)
+vm.runInContext(
+  `${variableNames.map(extractFunction).join('\n')}\nglobalThis.api = { gatewayRowHeight, gatewayVirtualWindow }`,
+  variableContext
+)
+const variableRows = [
+  { type: 'project' },
+  { type: 'session' },
+  { type: 'pin-divider' },
+  { type: 'more' },
+  { type: 'session' }
+]
+assert.deepEqual(variableRows.map(variableContext.api.gatewayRowHeight), [32, 32, 9, 28, 32])
+assert.deepEqual(
+  JSON.parse(JSON.stringify(variableContext.api.gatewayVirtualWindow(variableRows, 64, 30))),
+  { bottom: 32, end: 4, start: 2, top: 64 }
+)
+assert.match(source, /gatewayVirtualWindow\(renderRows, scrollTop, viewportHeight\)/, 'virtualization must receive row types, not only a count')
 
 console.log('codex-studio project recency preview contract passed')

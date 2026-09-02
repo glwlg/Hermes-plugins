@@ -72,7 +72,7 @@ for (const token of paperChrome) {
   assert.ok(source.includes(token), `missing paper chrome token: ${token}`)
 }
 
-assert.match(source, /paper rails around a pure-white conversation/, 'description must name the split: paper chrome, white thread')
+assert.match(source, /纸灰工作台，环绕纯白对话区/, 'description must name the split: paper chrome, white thread')
 assert.doesNotMatch(source, /blue-gray structure/)
 assert.doesNotMatch(source, /paper rails around a cold-white conversation/)
 

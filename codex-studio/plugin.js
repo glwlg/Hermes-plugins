@@ -113,7 +113,6 @@ const HOME_PROJECT_KEY = '__no_project__'
 const HOME_PROJECT_LABEL = '主页'
 const GATEWAY_SESSIONS_PREFS_KEY = 'gateway-sessions-preferences-v1'
 const GATEWAY_VIRTUALIZE_THRESHOLD = 120
-const GATEWAY_ROW_ESTIMATE_HEIGHT = 36
 const GATEWAY_VIRTUAL_OVERSCAN = 8
 const PROJECT_SESSION_PREVIEW_LIMIT = 5
 const SESSION_FRESHNESS_EVENT_TYPES = new Set([
@@ -141,6 +140,7 @@ let gatewaySessionStorage = null
 let gatewaySessionStorageOwner = null
 const $gatewaySessionLimit = atom(GATEWAY_SESSIONS_LIMIT)
 const $gatewaySessionPrefs = atom(DEFAULT_GATEWAY_SESSION_PREFERENCES)
+const $gatewayProjectDataRevision = atom(0)
 const sessionDataRevision = { current: 0 }
 
 function normalizeGatewaySessionPreferences(value) {
@@ -168,7 +168,7 @@ function writeGatewaySessionPreferences(next) {
 const CODEX_THEME = {
   name: THEME_NAME,
   label: 'Hermes Cold White',
-  description: 'A light-only workbench with paper rails around a pure-white conversation, ink controls, and graphite code surfaces.',
+  description: '明亮的纸灰工作台，环绕纯白对话区，配以墨色控件和石墨色代码表面。',
   colors: {
     background: '#ffffff',
     foreground: '#0d1c2f',
@@ -556,7 +556,7 @@ function compareSessions(a, b) {
 
 function projectLatestActivity(project) {
   const sessions = Array.isArray(project?.sessions) ? project.sessions : []
-  let latest = 0
+  let latest = sessionActivityValue({ last_active: project?.lastActive })
   for (const session of sessions) {
     const value = sessionActivityValue(session)
     if (value > latest) latest = value
@@ -669,12 +669,12 @@ async function mutateGatewaySession(project, session, method, body) {
   const profile = routeTargetProfile(route)
 
   if (!route || !route.targetProfile) {
-    throw new Error('Session owner route is unavailable in this Hermes Desktop build.')
+    throw new Error('当前 Hermes Desktop 无法识别该会话来源。')
   }
 
   if (method === 'PATCH' && Object.prototype.hasOwnProperty.call(body || {}, 'hidden')) {
     if (typeof host.setPersistedSessionHidden !== 'function') {
-      throw new Error('Route-aware session visibility is unavailable in this Hermes Desktop build.')
+      throw new Error('当前 Hermes Desktop 不支持跨来源隐藏会话。')
     }
     return host.setPersistedSessionHidden(route, {
       hidden: Boolean(body.hidden),
@@ -688,7 +688,7 @@ async function mutateGatewaySession(project, session, method, body) {
   // mutations use the public connection-qualified Desktop REST bridge.
   const desktop = typeof window !== 'undefined' ? window.hermesDesktop : null
   if (typeof desktop?.api !== 'function') {
-    throw new Error('Route-aware session REST is unavailable in this Hermes Desktop build.')
+    throw new Error('当前 Hermes Desktop 不支持跨来源修改会话。')
   }
 
   const path = `/api/sessions/${encodeURIComponent(session.id)}`
@@ -725,7 +725,7 @@ function SessionRenameDialog({ open, onOpenChange, project, session, onChanged }
       onOpenChange(false)
       onChanged?.({ body: { title }, method: 'PATCH', project, result, session })
     } catch (error) {
-      notifyActionError(error, 'Could not rename the session.')
+      notifyActionError(error, '无法重命名会话。')
     } finally {
       setSaving(false)
     }
@@ -790,7 +790,7 @@ function SessionContextMenu({ children, project, session, onChanged }) {
   return jsxs(ContextMenu, {
     children: [
       jsx(ContextMenuTrigger, { asChild: true, children }, 'trigger'),
-      jsx(ContextMenuContent, { 'aria-label': `Actions for ${actions.title}`, className: 'w-44', children: items }, 'content'),
+      jsx(ContextMenuContent, { 'aria-label': `会话操作：${actions.title}`, className: 'w-44', children: items }, 'content'),
       jsx(SessionRenameDialog, { open: renameOpen, onOpenChange: setRenameOpen, onChanged, project, session }, 'rename-dialog')
     ]
   })
@@ -883,7 +883,7 @@ function SessionActionsMenu({ children, project, session, onChanged }) {
   return jsxs(DropdownMenu, {
     children: [
       jsx(DropdownMenuTrigger, { 'aria-haspopup': 'menu', asChild: true, children }, 'trigger'),
-      jsx(DropdownMenuContent, { 'aria-label': `Actions for ${actions.title}`, align: 'end', className: 'w-44', children: items }, 'content'),
+      jsx(DropdownMenuContent, { 'aria-label': `会话操作：${actions.title}`, align: 'end', className: 'w-44', children: items }, 'content'),
       jsx(SessionRenameDialog, { open: renameOpen, onOpenChange: setRenameOpen, onChanged, project, session }, 'rename-dialog')
     ]
   })
@@ -956,6 +956,16 @@ function projectRemoteLabel(project) {
   return isHomeProject(project) ? '' : String(project?.remoteLabel || '').trim()
 }
 
+function projectSourceBadge(project) {
+  const profile = String(project?.profile || '').trim()
+  const profileLabel = profile && profile.toLowerCase() !== PROFILE_SCOPE_DEFAULT ? profile : ''
+  const remote = project?.route?.mode === 'remote' || Boolean(projectRemoteLabel(project))
+  const sourceLabel = remote
+    ? String(project?.sourceLabel || projectRemoteLabel(project) || '').trim()
+    : ''
+  return [sourceLabel, profileLabel].filter(Boolean).join(' · ')
+}
+
 function flattenGatewaySessions(data) {
   const rows = Array.isArray(data?.sessions)
     ? data.sessions
@@ -982,24 +992,55 @@ function projectPathContains(target, root) {
   return Boolean(targetKey && rootKey && (targetKey === rootKey || targetKey.startsWith(`${rootKey}/`)))
 }
 
+function projectTreeNodePaths(project) {
+  return [
+    project?.path,
+    project?.primary_path,
+    ...(Array.isArray(project?.repos) ? project.repos.flatMap(repo => [
+      repo?.id,
+      repo?.path,
+      ...(Array.isArray(repo?.groups) ? repo.groups.map(group => group?.path) : [])
+    ]) : [])
+  ].filter(value => typeof value === 'string' && value.trim())
+}
+
 function projectTreeEntries(projectTree) {
   const projects = Array.isArray(projectTree?.projects) ? projectTree.projects : []
   return projects
     .filter(project => project && !project.isNoProject)
-    .map(project => {
-      const paths = [
-        project.path,
-        project.primary_path,
-        ...(Array.isArray(project.repos) ? project.repos.flatMap(repo => [
-          repo?.id,
-          repo?.path,
-          ...(Array.isArray(repo?.groups) ? repo.groups.map(group => group?.path) : [])
-        ]) : [])
-      ].filter(value => typeof value === 'string' && value.trim())
-
-      return { project, paths }
-    })
+    .map(project => ({ project, paths: projectTreeNodePaths(project) }))
     .filter(entry => entry.paths.length > 0)
+}
+
+function normalizeProjectSessions(sessions, fallbackProfile, hideScheduled) {
+  const byId = new Map()
+  for (const value of Array.isArray(sessions) ? sessions : []) {
+    if (!value || typeof value.id !== 'string' || !value.id.trim()) {
+      continue
+    }
+    const session = normalizeSessionRecord(value, fallbackProfile)
+    if (hideScheduled && sessionIsScheduled(session)) {
+      continue
+    }
+    const existing = byId.get(session.id)
+    if (!existing || sessionActivityValue(session) > sessionActivityValue(existing)) {
+      byId.set(session.id, session)
+    }
+  }
+  return [...byId.values()].sort(compareSessions)
+}
+
+function flattenProjectNodeSessions(project, fallbackProfile, hideScheduled) {
+  const laneSessions = Array.isArray(project?.repos)
+    ? project.repos.flatMap(repo => Array.isArray(repo?.groups)
+      ? repo.groups.flatMap(group => Array.isArray(group?.sessions) ? group.sessions : [])
+      : [])
+    : []
+  return normalizeProjectSessions(
+    [...laneSessions, ...(Array.isArray(project?.previewSessions) ? project.previewSessions : [])],
+    fallbackProfile,
+    hideScheduled
+  )
 }
 
 function directProjectDescriptor(session) {
@@ -1182,7 +1223,10 @@ function refreshGatewaySessionQueries({ refreshRoutes = true } = {}) {
   if (refreshRoutes) {
     gatewayRouteCache.at = 0
     clearGatewayProjectTreeCache()
+  } else {
+    clearGatewayProjectSessionsCache()
   }
+  $gatewayProjectDataRevision.set($gatewayProjectDataRevision.get() + 1)
   if (typeof pluginQueryClient?.refetchQueries !== 'function') {
     return Promise.resolve()
   }
@@ -1275,7 +1319,7 @@ function projectGroupsForGatewayGroup(group, hideScheduled) {
   const projectMap = new Map()
   const route = group.route
 
-  const ensureProject = (descriptor, path) => {
+  const ensureProject = (descriptor, path, treeNode = null) => {
     const projectKey = `${group.key}::${descriptor.key}`
     const existing = projectMap.get(projectKey)
     if (existing) {
@@ -1283,6 +1327,9 @@ function projectGroupsForGatewayGroup(group, hideScheduled) {
       return existing
     }
 
+    const previewSessions = treeNode
+      ? flattenProjectNodeSessions(treeNode, group.profile, hideScheduled)
+      : []
     const project = {
       key: projectKey,
       sourceKey: descriptor.key,
@@ -1294,23 +1341,34 @@ function projectGroupsForGatewayGroup(group, hideScheduled) {
       route,
       path: path || '',
       projectTree: group.projectTree,
-      sessions: []
+      projectId: treeNode ? String(treeNode.id || '').trim() : '',
+      authoritative: Boolean(treeNode),
+      lastActive: treeNode ? Number(treeNode.lastActive) || 0 : 0,
+      sessionCount: treeNode ? Math.max(previewSessions.length, Number(treeNode.sessionCount) || 0) : 0,
+      previewSessions,
+      prefetchedSessions: [],
+      sessions: previewSessions
     }
     projectMap.set(projectKey, project)
     return project
   }
 
-  // Seed authoritative tree projects so an empty remote folder still has a
-  // "+" that can send that path as session.create cwd.
-  for (const entry of projectTreeEntries(group.projectTree)) {
+  // The backend tree is the authority for project identity, counts, and the
+  // initial five-row preview. It also includes the Home bucket.
+  const treeProjects = Array.isArray(group.projectTree?.projects) ? group.projectTree.projects : []
+  for (const treeNode of treeProjects) {
+    if (!treeNode) continue
+    const home = Boolean(treeNode.isNoProject)
     const descriptor = {
-      explicit: !entry.project.isAuto,
-      key: `project-tree:${String(entry.project.id || entry.project.label || 'unknown')}`,
-      label: String(entry.project.label || entry.project.name || entry.project.id || 'Project').trim()
+      explicit: !home && !treeNode.isAuto,
+      key: home ? HOME_PROJECT_KEY : `project-tree:${String(treeNode.id || treeNode.label || 'unknown')}`,
+      label: home ? HOME_PROJECT_LABEL : String(treeNode.label || treeNode.name || treeNode.id || 'Project').trim()
     }
-    ensureProject(descriptor, entry.paths[0] || '')
+    ensureProject(descriptor, projectTreeNodePaths(treeNode)[0] || '', treeNode)
   }
 
+  // The flat source window remains useful for fresh titles/status and search.
+  // It may be incomplete, so it never replaces an authoritative tree count.
   for (const session of group.sessions) {
     if (hideScheduled && sessionIsScheduled(session)) {
       continue
@@ -1319,18 +1377,40 @@ function projectGroupsForGatewayGroup(group, hideScheduled) {
     const descriptor = projectDescriptorForSession(session, group.projectTree)
     const path = descriptor.path || projectTreePathForDescriptor(descriptor, group.projectTree) || ''
     const pathKey = projectPathKey(path)
-    const treeMatch = pathKey
+    const directTreeMatch = projectMap.get(`${group.key}::${descriptor.key}`)
+    const treeMatch = directTreeMatch || (pathKey
       ? [...projectMap.values()].find(item => projectPathKey(item.path) === pathKey)
-      : null
+      : null)
     const project = treeMatch || ensureProject(descriptor, path)
-    project.sessions.push(session)
+    project.prefetchedSessions.push(session)
   }
 
-  return [...projectMap.values()]
-    .map(project => ({
+  return [...projectMap.values()].map(project => {
+    const prefetchedSessions = normalizeProjectSessions(
+      [...project.prefetchedSessions, ...project.previewSessions],
+      group.profile,
+      hideScheduled
+    )
+    const prefetchedComplete = project.authoritative
+      ? !group.hasMore || prefetchedSessions.length >= project.sessionCount
+      : true
+    const sessionCount = project.authoritative
+      ? prefetchedComplete
+        ? prefetchedSessions.length
+        : Math.max(project.sessionCount, prefetchedSessions.length)
+      : prefetchedSessions.length
+    const sessions = project.authoritative
+      ? prefetchedSessions.slice(0, PROJECT_SESSION_PREVIEW_LIMIT)
+      : prefetchedSessions
+
+    return {
       ...project,
-      sessions: [...project.sessions].sort(compareSessions)
-    }))
+      prefetchedComplete,
+      prefetchedSessions,
+      sessionCount,
+      sessions
+    }
+  })
 }
 
 function normalizeSessionPage(data) {
@@ -1347,6 +1427,57 @@ const gatewayRouteCache = {
   routes: null
 }
 const gatewayProjectTreeCache = new Map()
+const gatewayProjectSessionsCache = new Map()
+
+function gatewayProjectSessionsCacheKey(project) {
+  const projectId = String(project?.projectId || '').trim()
+  return project?.route && projectId ? `${routeKey(project.route)}::${projectId}` : ''
+}
+
+function clearGatewayProjectSessionsCache(project) {
+  const key = gatewayProjectSessionsCacheKey(project)
+  if (key) {
+    gatewayProjectSessionsCache.delete(key)
+  } else {
+    gatewayProjectSessionsCache.clear()
+  }
+}
+
+async function fetchGatewayProjectSessions(project) {
+  const key = gatewayProjectSessionsCacheKey(project)
+  if (!key || typeof host.requestProfile !== 'function') {
+    throw new Error('当前 Hermes 版本无法读取项目会话。')
+  }
+  const cached = gatewayProjectSessionsCache.get(key)
+  if (cached?.sessions) {
+    return cached.sessions
+  }
+  if (cached?.promise) {
+    return cached.promise
+  }
+
+  const promise = Promise.resolve()
+    .then(() => host.requestProfile(project.route, 'projects.project_sessions', {
+      project_id: project.projectId,
+      profile: routeTargetProfile(project.route)
+    }))
+    .then(response => {
+      const node = response?.project
+      if (!node || typeof node !== 'object') {
+        throw new Error('项目会话不存在。')
+      }
+      const sessions = flattenProjectNodeSessions(node, project.profile, false)
+      gatewayProjectSessionsCache.set(key, { sessions })
+      return sessions
+    })
+    .catch(error => {
+      gatewayProjectSessionsCache.delete(key)
+      throw error
+    })
+
+  gatewayProjectSessionsCache.set(key, { promise })
+  return promise
+}
 
 function usableProfileRoute(route) {
   return Boolean(
@@ -1366,7 +1497,7 @@ async function cachedGatewayRoutes() {
     return gatewayRouteCache.promise
   }
   if (typeof host.profileRoutes !== 'function') {
-    throw new Error('Update Hermes Desktop to enumerate gateway profiles.')
+    throw new Error('请更新 Hermes Desktop 以读取网关配置。')
   }
 
   const promise = Promise.resolve()
@@ -1388,11 +1519,12 @@ async function cachedGatewayRoutes() {
 
 function clearGatewayProjectTreeCache() {
   gatewayProjectTreeCache.clear()
+  clearGatewayProjectSessionsCache()
 }
 
 async function listGatewaySessions(route, limit = GATEWAY_SESSIONS_LIMIT) {
   if (typeof host.listPersistedSessions !== 'function') {
-    throw new Error('Update Hermes Desktop to list sessions across gateways.')
+    throw new Error('请更新 Hermes Desktop 以读取跨网关会话。')
   }
 
   const requestedLimit = Math.min(GATEWAY_SESSIONS_LIMIT_MAX, Math.max(GATEWAY_SESSIONS_LIMIT, limit))
@@ -1436,8 +1568,7 @@ async function fetchGatewayProjectTree(route) {
 
   const promise = Promise.resolve()
     .then(() => host.requestProfile(route, 'projects.tree', {
-      preview_limit: 3,
-      session_limit: GATEWAY_SESSIONS_LIMIT,
+      preview_limit: PROJECT_SESSION_PREVIEW_LIMIT,
       profile: routeTargetProfile(route)
     }))
     .then(response => response && typeof response === 'object' && response.projects ? response : null)
@@ -1557,16 +1688,10 @@ async function fetchGatewaySessionGroups(profileScope = PROFILE_SCOPE_DEFAULT, s
   return { groups }
 }
 
-function patchSessionInGroups(groups, project, session, body, method, result) {
-  if (!Array.isArray(groups)) {
-    return groups
+function patchSessionRows(rows, session, body, method, result) {
+  if (!Array.isArray(rows)) {
+    return rows
   }
-
-  const routeKeyForProject = project?.route ? routeKey(project.route) : ''
-  if (!routeKeyForProject) {
-    return groups
-  }
-
   const isDelete = method === 'DELETE'
   const pinned = body && Object.prototype.hasOwnProperty.call(body, 'pinned')
     ? sessionBooleanValue(body.pinned)
@@ -1583,52 +1708,82 @@ function patchSessionInGroups(groups, project, session, body, method, result) {
     : result && Object.prototype.hasOwnProperty.call(result, 'archived')
       ? sessionBooleanValue(result.archived)
       : undefined
-  const removesSession = isDelete || archived === true
   const title = body && Object.prototype.hasOwnProperty.call(body, 'title')
     ? String(body.title || '').trim()
     : result && Object.prototype.hasOwnProperty.call(result, 'title')
       ? String(result.title || '').trim()
       : undefined
 
+  if (isDelete || archived === true) {
+    return rows.filter(row => row.id !== session.id)
+  }
+  return rows
+    .map(row => row.id === session.id
+      ? {
+          ...row,
+          ...(pinned === undefined ? {} : { pinned }),
+          ...(unread === undefined ? {} : { unread }),
+          ...(title === undefined ? {} : { title })
+        }
+      : row)
+    .sort(compareSessions)
+}
+
+function patchSessionInGroups(groups, project, session, body, method, result) {
+  if (!Array.isArray(groups)) {
+    return groups
+  }
+
+  const routeKeyForProject = project?.route ? routeKey(project.route) : ''
+  if (!routeKeyForProject) {
+    return groups
+  }
+
   return groups.map(group => {
     if (group.key !== routeKeyForProject) {
       return group
     }
 
-    const nextSessions = removesSession
-      ? group.sessions.filter(row => row.id !== session.id)
-      : group.sessions
-        .map(row => row.id === session.id
-          ? {
-              ...row,
-              ...(pinned === undefined ? {} : { pinned }),
-              ...(unread === undefined ? {} : { unread }),
-              ...(title === undefined ? {} : { title })
-            }
-          : row)
-        .sort(compareSessions)
-
+    const nextSessions = patchSessionRows(group.sessions, session, body, method, result)
+    const removed = nextSessions.length < group.sessions.length
     return {
       ...group,
       sessions: nextSessions,
-      total: removesSession ? Math.max(nextSessions.length, (Number(group.total) || group.sessions.length) - 1) : group.total
+      total: removed ? Math.max(nextSessions.length, (Number(group.total) || group.sessions.length) - 1) : group.total
     }
   })
 }
 
-function gatewayVirtualWindow(totalRows, scrollTop, viewportHeight) {
-  const rowHeight = GATEWAY_ROW_ESTIMATE_HEIGHT
-  const firstVisible = Math.max(0, Math.floor(Math.max(0, scrollTop) / rowHeight))
-  const visibleCount = Math.max(1, Math.ceil(Math.max(rowHeight, viewportHeight) / rowHeight))
-  const start = Math.max(0, firstVisible - GATEWAY_VIRTUAL_OVERSCAN)
-  const end = Math.min(totalRows, firstVisible + visibleCount + GATEWAY_VIRTUAL_OVERSCAN)
-  return {
-    bottom: Math.max(0, (totalRows - end) * rowHeight),
-    end,
-    rowHeight,
-    start,
-    top: start * rowHeight
+function gatewayRowHeight(row) {
+  if (row?.type === 'pin-divider') return 9
+  if (row?.type === 'more' || row?.type === 'collapse' || row?.type === 'project-loading' || row?.type === 'project-error') return 28
+  return 32
+}
+
+function gatewayVirtualWindow(rows, scrollTop, viewportHeight) {
+  const list = Array.isArray(rows) ? rows : []
+  const heights = list.map(gatewayRowHeight)
+  const topTarget = Math.max(0, Number(scrollTop) || 0)
+  const bottomTarget = topTarget + Math.max(1, Number(viewportHeight) || 1)
+  let firstVisible = 0
+  let firstTop = 0
+  while (firstVisible < heights.length && firstTop + heights[firstVisible] <= topTarget) {
+    firstTop += heights[firstVisible]
+    firstVisible += 1
   }
+
+  let firstAfterViewport = firstVisible
+  let cursor = firstTop
+  while (firstAfterViewport < heights.length && cursor < bottomTarget) {
+    cursor += heights[firstAfterViewport]
+    firstAfterViewport += 1
+  }
+
+  const start = Math.max(0, firstVisible - GATEWAY_VIRTUAL_OVERSCAN)
+  const end = Math.min(list.length, firstAfterViewport + GATEWAY_VIRTUAL_OVERSCAN)
+  const top = heights.slice(0, start).reduce((sum, height) => sum + height, 0)
+  const bottom = heights.slice(end).reduce((sum, height) => sum + height, 0)
+  return { bottom, end, start, top }
 }
 
 function gatewayRenderRows(projects, collapsed, revealed = new Set()) {
@@ -1640,7 +1795,8 @@ function gatewayRenderRows(projects, collapsed, revealed = new Set()) {
     }
 
     const sessions = Array.isArray(project.sessions) ? project.sessions : []
-    const canExpand = sessions.length > PROJECT_SESSION_PREVIEW_LIMIT
+    const sessionCount = Math.max(sessions.length, Number(project.sessionCount) || 0)
+    const canExpand = sessionCount > PROJECT_SESSION_PREVIEW_LIMIT
     const showAll = revealed.has(project.key) || !canExpand
     const visible = showAll ? sessions : sessions.slice(0, PROJECT_SESSION_PREVIEW_LIMIT)
     let sawUnpinned = false
@@ -1654,16 +1810,21 @@ function gatewayRenderRows(projects, collapsed, revealed = new Set()) {
       }
       rows.push({ key: `session:${project.key}:${session.id}`, type: 'session', project, session })
     }
-    const hiddenLoaded = Math.max(0, sessions.length - visible.length)
-    if (hiddenLoaded > 0) {
+    const remaining = Math.max(0, sessionCount - visible.length)
+    if (!showAll && remaining > 0) {
       rows.push({
         key: `more:${project.key}`,
         type: 'more',
         project,
-        remaining: hiddenLoaded
+        remaining
       })
     }
-    if (showAll && (sessions.length > PROJECT_SESSION_PREVIEW_LIMIT || revealed.has(project.key))) {
+    if (showAll && project.loadStatus === 'loading') {
+      rows.push({ key: `project-loading:${project.key}`, type: 'project-loading', project })
+    } else if (showAll && project.loadStatus === 'error') {
+      rows.push({ key: `project-error:${project.key}`, type: 'project-error', project })
+    }
+    if (showAll && !project.suppressCollapse && (canExpand || revealed.has(project.key))) {
       rows.push({
         key: `collapse:${project.key}`,
         type: 'collapse',
@@ -1676,45 +1837,51 @@ function gatewayRenderRows(projects, collapsed, revealed = new Set()) {
 
 function gatewayProjectHeaderRow(project, collapsed, toggle, newChat) {
   const projectKey = project.key
-  const gatewayLabel = String(project.sourceLabel || '').trim()
   const remoteLabel = projectRemoteLabel(project)
-  const profileLabel = String(project.profile || '').trim()
-  const sourceBadge = [gatewayLabel, remoteLabel, profileLabel].filter(Boolean).join(' · ')
+  const remote = project?.route?.mode === 'remote' || Boolean(remoteLabel)
+  const sourceBadge = projectSourceBadge(project)
+  const projectLabel = projectDisplayLabel(project)
   return jsxs('div', {
-    className: 'group flex h-9 w-full items-center gap-1 rounded px-1.5 hover:bg-(--ui-row-hover-background)',
+    className: 'group flex h-8 w-full items-center gap-1 rounded px-1.5 hover:bg-(--ui-row-hover-background)',
     children: [
       jsxs('button', {
         className: 'flex min-w-0 flex-1 items-center gap-1.5 text-left',
         'aria-expanded': !collapsed.has(projectKey),
-        'aria-label': `${collapsed.has(projectKey) ? 'Expand' : 'Collapse'} ${projectDisplayLabel(project)}`,
+        'aria-label': `${collapsed.has(projectKey) ? '展开' : '收起'} ${projectLabel}`,
         onClick: () => toggle(projectKey),
         type: 'button',
         children: [
           jsx(Codicon, { name: collapsed.has(projectKey) ? 'chevron-right' : 'chevron-down', size: '0.68rem' }, 'chevron'),
           isHomeProject(project)
             ? jsx(Codicon, { name: 'home', size: '0.76rem' }, 'home')
-            : remoteLabel
+            : remote
               ? jsxs('span', {
                   className: 'relative flex size-4 shrink-0 items-center justify-center',
-                  title: 'Remote project',
+                  title: project.hasExplicitMetadata ? '远程项目' : '自动识别的远程项目',
                   children: [
                     jsx(Codicon, { name: 'folder', size: '0.76rem' }, 'folder'),
                     jsx(Codicon, { name: 'globe', size: '0.5rem', className: 'absolute -bottom-0.5 -right-0.5 rounded-full bg-(--ui-sidebar-surface-background)' }, 'globe')
                   ]
                 }, 'remote-folder')
-              : jsx(Codicon, { name: 'folder', size: '0.76rem' }, 'folder'),
-          jsx('span', { className: 'min-w-0 flex-1 truncate text-[0.7rem] font-medium text-foreground/80', children: projectDisplayLabel(project) }, 'label'),
-          sourceBadge && jsx('span', { className: 'max-w-36 shrink-0 truncate rounded px-1 text-[0.58rem] text-(--ui-text-quaternary)', title: sourceBadge, children: sourceBadge }, 'source'),
-          !project.hasExplicitMetadata && jsx('span', { className: 'text-[0.58rem] text-(--ui-text-quaternary)', children: 'auto' }, 'auto'),
-          jsx('span', { className: 'text-[0.6rem] tabular-nums text-(--ui-text-quaternary)', children: project.sessions.length }, 'count')
+              : jsx('span', {
+                  className: 'flex size-4 shrink-0 items-center justify-center',
+                  title: project.hasExplicitMetadata ? '项目' : '自动识别的项目',
+                  children: jsx(Codicon, { name: 'folder', size: '0.76rem' })
+                }, 'folder'),
+          jsx('span', { className: 'min-w-0 flex-1 truncate text-[0.7rem] font-medium text-foreground/80', children: projectLabel }, 'label'),
+          sourceBadge && jsx('span', { className: 'max-w-28 shrink-0 truncate px-1 text-[0.58rem] text-(--ui-text-quaternary)', title: sourceBadge, children: sourceBadge }, 'source'),
+          jsx('span', {
+            className: 'text-[0.6rem] tabular-nums text-(--ui-text-quaternary)',
+            children: Math.max(project.sessions.length, Number(project.sessionCount) || 0)
+          }, 'count')
         ]
       }, 'toggle'),
       jsx(Button, {
-        'aria-label': `New chat on ${project.sourceLabel || 'gateway'}`,
+        'aria-label': `在 ${projectLabel} 中新建会话`,
         className: 'size-6 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100',
         onClick: () => newChat(project),
         size: 'icon-xs',
-        title: `New chat on ${project.sourceLabel || 'gateway'}`,
+        title: `在 ${projectLabel} 中新建会话`,
         variant: 'ghost',
         children: jsx(Codicon, { name: 'add', size: '0.8rem' })
       }, 'new-chat')
@@ -1727,15 +1894,16 @@ function gatewaySessionRow(project, session, focusedStoredSessionId, focusedSess
   const title = sessionRowTitle(session)
   const active = focusedSessionMatches(session, project, focusedStoredSessionId, focusedSessionOwner)
   const openingNow = opening === sessionKey
-  const rowClassName = `codex-gateway-session-row group relative h-9 min-w-0 rounded-md text-left transition-colors hover:bg-(--ui-row-hover-background) ${active ? 'bg-(--ui-row-active-background) text-foreground' : ''} ${openingNow ? 'opacity-60' : ''}`
+  const rowClassName = `codex-gateway-session-row group relative h-8 min-w-0 rounded-md text-left transition-colors hover:bg-(--ui-row-hover-background) ${active ? 'bg-(--ui-row-active-background) text-foreground' : ''} ${openingNow ? 'opacity-60' : ''}`
   const row = jsxs('div', {
     'aria-current': active ? 'page' : undefined,
-    'aria-label': `Session ${title}`,
+    'aria-label': `会话 ${title}`,
     'data-session-row': session.id,
     className: rowClassName,
     style: {
       alignItems: 'stretch',
       backgroundColor: active ? 'var(--ui-row-active-background)' : undefined,
+      boxShadow: active ? 'inset 0 0 0 1px var(--ui-stroke-secondary)' : undefined,
       display: 'grid',
       gridTemplateColumns: 'minmax(0, 1fr) max-content max-content',
       marginLeft: '1.5rem',
@@ -1744,23 +1912,20 @@ function gatewaySessionRow(project, session, focusedStoredSessionId, focusedSess
     },
     children: [
       jsx(RowButton, {
-        className: 'flex w-full min-w-0 items-center gap-2 rounded-md bg-transparent px-2 py-1.5 text-left hover:bg-transparent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-(--ui-accent)',
+        className: 'flex w-full min-w-0 items-center rounded-md bg-transparent px-2 py-1 text-left hover:bg-transparent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-(--ui-accent)',
         disabled: openingNow,
         onClick: () => void open(project, session),
-        title: session.preview || title,
+        title: session.preview ? `${title}\n${session.preview}` : title,
         type: 'button',
-        children: jsxs('span', {
-          className: 'min-w-0 flex flex-1 flex-col',
-          children: [
-            jsx('span', { className: 'block min-w-0 truncate font-medium text-foreground/85', children: title }, 'title'),
-            jsx('span', { className: 'block truncate text-[0.64rem] text-(--ui-text-quaternary)', children: session.preview || `${session.message_count || 0} messages` }, 'preview')
-          ]
+        children: jsx('span', {
+          className: `block min-w-0 flex-1 truncate ${active ? 'font-semibold text-foreground' : 'font-normal text-foreground/85'}`,
+          children: title
         })
       }, 'open'),
       jsx('button', {
-        'aria-label': `Open session ${title}`,
+        'aria-label': `打开会话 ${title}`,
         'data-session-time': true,
-        className: 'shrink-0 min-w-max bg-transparent px-1 text-right text-[0.62rem] tabular-nums whitespace-nowrap text-(--ui-text-quaternary) hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-(--ui-accent)',
+        className: 'shrink-0 min-w-max bg-transparent px-1 text-right text-[0.6rem] tabular-nums whitespace-nowrap text-(--ui-text-quaternary) hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-(--ui-accent)',
         onClick: () => void open(project, session),
         title: sessionRowTime(session),
         type: 'button',
@@ -1783,7 +1948,7 @@ function gatewaySessionRow(project, session, focusedStoredSessionId, focusedSess
             'data-session-menu': true,
             children: jsx(SessionActionsMenu, {
               children: jsx(Button, {
-                'aria-label': `Actions for ${title}`,
+                'aria-label': `会话操作：${title}`,
                 className: 'size-6 rounded-[4px] bg-transparent text-(--ui-text-tertiary) hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground',
                 size: 'icon-xs',
                 variant: 'ghost',
@@ -1821,6 +1986,30 @@ function gatewayProjectToggleRow(project, remaining, onToggle, mode) {
       children: `${label}${extra}`
     })
   }, `${collapsing ? 'collapse' : 'more'}:${project.key}`)
+}
+
+function gatewayProjectLoadRow(project, onRetry, mode) {
+  const failed = mode === 'error'
+  return jsx('div', {
+    className: 'flex h-7 min-w-0 items-center gap-1.5 px-2 text-[0.62rem] text-(--ui-text-quaternary)',
+    role: failed ? 'alert' : 'status',
+    style: { marginLeft: '1.5rem', width: 'calc(100% - 1.5rem)' },
+    children: failed
+      ? jsx(Button, {
+          className: 'h-6 justify-start bg-transparent px-0 text-[0.62rem] text-(--ui-text-quaternary) hover:text-foreground',
+          onClick: () => onRetry(project.key),
+          size: 'xs',
+          variant: 'ghost',
+          children: '加载失败，点击重试'
+        })
+      : jsxs('span', {
+          className: 'flex items-center gap-1.5',
+          children: [
+            jsx(GlyphSpinner, { ariaLabel: '正在加载项目会话', className: 'text-[0.7rem]' }, 'spinner'),
+            jsx('span', { children: '正在加载会话…' }, 'label')
+          ]
+        })
+  }, `${failed ? 'project-error' : 'project-loading'}:${project.key}`)
 }
 
 function eventRouteKey(event) {
@@ -1961,10 +2150,10 @@ function GatewayInboxChip() {
   }
 
   const label = inbox.failed
-    ? `${inbox.failed} gateway source${inbox.failed === 1 ? '' : 's'} unavailable`
+    ? `${inbox.failed} 个会话来源不可用`
     : inbox.unread
-      ? `${inbox.unread} unread across gateways`
-      : `${inbox.loaded} sessions across gateways`
+      ? `跨网关有 ${inbox.unread} 个未读会话`
+      : `跨网关共加载 ${inbox.loaded} 个会话`
 
   return jsx(Tip, {
     label,
@@ -1990,6 +2179,8 @@ function GatewaySessionsPane() {
   const hideScheduled = prefs.hideScheduled
   const collapsed = useMemo(() => new Set(prefs.collapsedKeys), [prefs.collapsedKeys])
   const [revealedProjects, setRevealedProjects] = useState(() => new Set())
+  const [projectLoads, setProjectLoads] = useState(() => new Map())
+  const projectLoadGenerationRef = useRef(0)
   const [opening, setOpening] = useState('')
   const [sessionFilter, setSessionFilter] = useState('all')
   const [retryingSourceKey, setRetryingSourceKey] = useState('')
@@ -1999,6 +2190,7 @@ function GatewaySessionsPane() {
   const focusedStoredSessionId = useValue(host.state.focusedStoredSessionId)
   const focusedSessionOwner = useValue(host.state.focusedSessionOwner)
   const focusedBusy = useValue(host.state.busy)
+  const projectDataRevision = useValue($gatewayProjectDataRevision)
   const projectOrderKeysRef = useRef([])
   const lastProjectSortEpochRef = useRef(-1)
   const previousBusyRef = useRef(false)
@@ -2026,7 +2218,10 @@ function GatewaySessionsPane() {
   useEffect(() => {
     projectOrderKeysRef.current = []
     lastProjectSortEpochRef.current = -1
-  }, [sessionsQueryKey])
+    projectLoadGenerationRef.current += 1
+    setProjectLoads(new Map())
+    setRevealedProjects(new Set())
+  }, [projectDataRevision, sessionsQueryKey])
 
   useEffect(() => {
     if (shouldResortProjectsForUserInput({ previousBusy: previousBusyRef.current, busy: focusedBusy })) {
@@ -2036,9 +2231,8 @@ function GatewaySessionsPane() {
   }, [focusedBusy])
 
   const sourceGroups = sessionsQuery.data?.groups || []
-  const loadedSessionCount = sourceGroups.reduce((count, group) => count + group.sessions.length, 0)
-  const totalSessionCount = sourceGroups.reduce((count, group) => count + Math.max(group.sessions.length, Number(group.total) || 0), 0)
-  const hasExactSessionTotal = sourceGroups.length > 0 && sourceGroups.every(group => !group.error && group.totalExact)
+  const loadedSessionCount = sourceGroups.reduce((count, group) => count + group.sessions.filter(session => !hideScheduled || !sessionIsScheduled(session)).length, 0)
+  const sourcesIncomplete = sourceGroups.some(group => !group.error && group.hasMore)
 
   // Groups are only a transport shape. The UI deliberately flattens every
   // route's projects into one list; route metadata stays on each project so a
@@ -2053,23 +2247,41 @@ function GatewaySessionsPane() {
         const remoteLabel = projectRemoteLabel(project)
         const sourceLabel = String(project.sourceLabel || '').trim()
         const profile = String(project.profile || '').trim()
+        const load = projectLoads.get(project.key)
+        const hydratedSessions = load?.status === 'ready'
+          ? normalizeProjectSessions(load.sessions, profile, hideScheduled)
+          : null
+        const prefetchedSessions = hydratedSessions || project.prefetchedSessions || project.sessions
+        const sessions = hydratedSessions || project.sessions
         return {
           ...project,
           displayLabel,
           remoteLabel,
           sourceLabel,
           profile,
-          sessions: [...project.sessions].sort(compareSessions)
+          hydrated: Boolean(hydratedSessions) || project.prefetchedComplete,
+          loadError: load?.error || '',
+          loadStatus: load?.status || 'idle',
+          prefetchedSessions,
+          searchSessions: prefetchedSessions,
+          sessionCount: hydratedSessions ? hydratedSessions.length : project.sessionCount,
+          sessions: [...sessions].sort(compareSessions)
         }
       })
-  ), [hideScheduled, sourceGroups])
+  ), [hideScheduled, projectLoads, sourceGroups])
+
+  const totalProjectSessionCount = unfilteredProjects.reduce(
+    (count, project) => count + Math.max(project.sessions.length, Number(project.sessionCount) || 0),
+    0
+  )
 
   const visibleProjects = useMemo(() => {
     const needle = search.trim().toLowerCase()
+    const filtering = Boolean(needle) || sessionFilter !== 'all'
     return unfilteredProjects
-      .map(project => ({
-        ...project,
-        sessions: project.sessions.filter(session => {
+      .map(project => {
+        const pool = filtering ? project.searchSessions : project.sessions
+        const sessions = pool.filter(session => {
           if (!sessionMatchesFilter(session, sessionFilter)) {
             return false
           }
@@ -2080,8 +2292,15 @@ function GatewaySessionsPane() {
             .toLowerCase()
             .includes(needle)
         })
-      }))
-      .filter(project => project.sessions.length > 0 || !needle)
+        return {
+          ...project,
+          loadStatus: filtering ? 'idle' : project.loadStatus,
+          sessionCount: filtering ? sessions.length : project.sessionCount,
+          sessions,
+          suppressCollapse: filtering
+        }
+      })
+      .filter(project => project.sessions.length > 0 || !filtering)
   }, [search, sessionFilter, unfilteredProjects])
 
   const projects = useMemo(() => {
@@ -2114,7 +2333,7 @@ function GatewaySessionsPane() {
       return { rows: renderRows, topSpacer: 0, bottomSpacer: 0 }
     }
 
-    const windowed = gatewayVirtualWindow(renderRows.length, scrollTop, viewportHeight)
+    const windowed = gatewayVirtualWindow(renderRows, scrollTop, viewportHeight)
     return {
       rows: renderRows.slice(windowed.start, windowed.end),
       topSpacer: windowed.top,
@@ -2148,10 +2367,10 @@ function GatewaySessionsPane() {
       // session RPC routing. The hash change makes the existing core
       // useRouteResume path paint the target chat immediately.
       host.navigate(`/${encodeURIComponent(session.id)}`)
-    } catch (error) {
+    } catch {
       host.notify({
         kind: 'error',
-        message: error instanceof Error ? error.message : 'Could not open gateway session.'
+        message: '无法打开网关会话。'
       })
       setOpening(current => (current === key ? '' : current))
       return
@@ -2168,7 +2387,7 @@ function GatewaySessionsPane() {
 
       host.notify({
         kind: 'error',
-        message: error instanceof Error ? error.message : 'Could not open gateway session.'
+        message: '无法打开网关会话。'
       })
     })
   }
@@ -2186,14 +2405,62 @@ function GatewaySessionsPane() {
     })
   }
 
-  const revealProjectSessions = key => {
+  const loadProjectSessions = (key, retry = false) => {
+    const project = unfilteredProjects.find(row => row.key === key)
+    if (!project || project.loadStatus === 'loading') {
+      return
+    }
+
     setRevealedProjects(current => {
       if (current.has(key)) return current
       const next = new Set(current)
       next.add(key)
       return next
     })
+
+    if (project.loadStatus === 'ready') {
+      return
+    }
+
+    if (project.prefetchedComplete || !project.projectId) {
+      setProjectLoads(current => {
+        const next = new Map(current)
+        next.set(key, { status: 'ready', sessions: project.prefetchedSessions })
+        return next
+      })
+      return
+    }
+
+    if (retry) {
+      clearGatewayProjectSessionsCache(project)
+    }
+    const generation = projectLoadGenerationRef.current
+    setProjectLoads(current => {
+      const next = new Map(current)
+      next.set(key, { status: 'loading' })
+      return next
+    })
+    void fetchGatewayProjectSessions(project)
+      .then(sessions => {
+        if (generation !== projectLoadGenerationRef.current) return
+        setProjectLoads(current => {
+          const next = new Map(current)
+          next.set(key, { status: 'ready', sessions })
+          return next
+        })
+      })
+      .catch(() => {
+        if (generation !== projectLoadGenerationRef.current) return
+        setProjectLoads(current => {
+          const next = new Map(current)
+          next.set(key, { status: 'error', error: '无法加载项目会话。' })
+          return next
+        })
+      })
   }
+
+  const revealProjectSessions = key => loadProjectSessions(key)
+  const retryProjectSessions = key => loadProjectSessions(key, true)
 
   const collapseProjectSessions = key => {
     setRevealedProjects(current => {
@@ -2214,13 +2481,13 @@ function GatewaySessionsPane() {
     let handedOff = false
     try {
       if (typeof host.requestProfile !== 'function' || typeof host.openSession !== 'function') {
-        throw new Error('Update Hermes Desktop to start a chat on another gateway.')
+        throw new Error('请更新 Hermes Desktop 以在其他网关新建会话。')
       }
 
       const home = isHomeProject(project)
       const targetPath = projectWorkspacePath(project)
       if (!home && !targetPath) {
-        throw new Error(`Could not resolve a workspace path for ${projectDisplayLabel(project)}.`)
+        throw new Error(`无法解析项目“${projectDisplayLabel(project)}”的工作目录。`)
       }
 
       // Do not call host.newChat / ensureAgent. Those rewrite the global
@@ -2258,18 +2525,22 @@ function GatewaySessionsPane() {
           }
           host.notify({
             kind: 'error',
-            message: error instanceof Error ? error.message : 'Could not open the new gateway chat.'
+            message: '无法打开新建的网关会话。'
           })
         })
         .finally(() => {
           try { release?.() } catch {}
         })
+      clearGatewayProjectTreeCache()
+      projectLoadGenerationRef.current += 1
+      setProjectLoads(new Map())
+      setRevealedProjects(new Set())
       void queryClient.refetchQueries({ queryKey: sessionsQueryKey, type: 'active' })
       setProjectSortEpoch(current => current + 1)
-    } catch (error) {
+    } catch {
       host.notify({
         kind: 'error',
-        message: error instanceof Error ? error.message : 'Could not start a gateway chat.'
+        message: '无法新建网关会话。'
       })
     } finally {
       if (!handedOff) {
@@ -2310,7 +2581,7 @@ function GatewaySessionsPane() {
           }
         : current)
     } catch {
-      host.notify({ kind: 'error', message: `Could not retry ${group.label}.` })
+      host.notify({ kind: 'error', message: `无法重试 ${group.label}。` })
     } finally {
       setRetryingSourceKey(current => current === group.key ? '' : current)
     }
@@ -2332,6 +2603,19 @@ function GatewaySessionsPane() {
         groups: patchSessionInGroups(current.groups, project, session, body, method, result)
       }
     })
+    clearGatewayProjectSessionsCache(project)
+    setProjectLoads(current => {
+      const load = current.get(project.key)
+      if (!load?.sessions) {
+        return current
+      }
+      const next = new Map(current)
+      next.set(project.key, {
+        ...load,
+        sessions: patchSessionRows(load.sessions, session, body, method, result)
+      })
+      return next
+    })
     void queryClient.refetchQueries({ queryKey: sessionsQueryKey, type: 'active' })
   }
 
@@ -2339,11 +2623,11 @@ function GatewaySessionsPane() {
     return jsxs('div', {
       className: 'flex h-full flex-col items-center justify-center gap-2 bg-(--ui-sidebar-surface-background) p-4 text-(--ui-text-tertiary)',
       children: [
-        jsx(GlyphSpinner, { ariaLabel: 'Loading sessions', className: 'text-sm' }, 'spinner'),
+        jsx(GlyphSpinner, { ariaLabel: '正在加载会话', className: 'text-sm' }, 'spinner'),
         jsx(EmptyState, {
           className: 'min-h-0',
-          description: 'Reading sessions from every available gateway.',
-          title: 'Loading sessions…'
+          description: '正在读取所有可用网关的会话。',
+          title: '正在加载会话…'
         }, 'empty')
       ]
     })
@@ -2354,9 +2638,9 @@ function GatewaySessionsPane() {
       className: 'flex h-full items-center justify-center bg-(--ui-sidebar-surface-background) p-4',
       children: jsxs(ErrorState, {
         className: 'max-w-xs',
-        description: 'Gateway sessions are unavailable.',
+        description: '暂时无法读取网关会话。',
         title: 'Codex Studio',
-        children: jsx(Button, { onClick: refresh, size: 'xs', variant: 'ghost', children: 'Retry' }, 'retry')
+        children: jsx(Button, { onClick: refresh, size: 'xs', variant: 'ghost', children: '重试' }, 'retry')
       })
     })
   }
@@ -2365,40 +2649,40 @@ function GatewaySessionsPane() {
     className: 'flex h-full min-h-0 flex-col bg-(--ui-sidebar-surface-background) text-xs text-(--ui-text-tertiary)',
     children: [
       jsxs('header', {
-        className: 'flex shrink-0 items-center gap-1.5 border-b border-(--ui-stroke-tertiary) px-3 py-2',
+        className: 'flex shrink-0 items-center gap-1.5 border-b border-(--ui-stroke-tertiary) px-3 py-1.5',
         children: [
-          jsx('div', { className: 'min-w-0 flex-1 font-medium text-foreground', children: 'Codex Studio' }, 'title'),
+          jsx('div', { className: 'min-w-0 flex-1 whitespace-nowrap font-medium text-foreground', children: 'Codex Studio' }, 'title'),
           jsx('span', {
             className: 'text-[0.65rem] tabular-nums text-(--ui-text-quaternary)',
-            title: hasExactSessionTotal && totalSessionCount > loadedSessionCount ? `已加载 ${loadedSessionCount} / 共 ${totalSessionCount}` : `已加载 ${loadedSessionCount}`,
-            children: hasExactSessionTotal && totalSessionCount > loadedSessionCount ? `${loadedSessionCount}/${totalSessionCount}` : loadedSessionCount
+            title: sourcesIncomplete ? `项目共 ${totalProjectSessionCount} 条；搜索已加载 ${loadedSessionCount} 条` : `共 ${totalProjectSessionCount} 条会话`,
+            children: totalProjectSessionCount
           }, 'count'),
           jsx('select', {
-            'aria-label': 'Profile scope',
-            className: 'h-6 max-w-28 rounded border border-(--ui-stroke-tertiary) bg-transparent px-1 text-[0.65rem] text-foreground',
+            'aria-label': '配置范围',
+            className: 'h-6 max-w-20 rounded border border-(--ui-stroke-tertiary) bg-transparent px-1 text-[0.65rem] text-foreground',
             onChange: event => persistPrefs({ profileScope: event.target.value }),
-            title: profileScope === PROFILE_SCOPE_ALL ? 'Showing all profiles' : 'Showing default profile',
+            title: profileScope === PROFILE_SCOPE_ALL ? '显示全部配置' : '仅显示默认配置',
             value: profileScope,
             children: [
-              jsx('option', { value: PROFILE_SCOPE_DEFAULT, children: 'default' }, PROFILE_SCOPE_DEFAULT),
-              jsx('option', { value: PROFILE_SCOPE_ALL, children: 'All profiles' }, PROFILE_SCOPE_ALL)
+              jsx('option', { value: PROFILE_SCOPE_DEFAULT, children: '默认' }, PROFILE_SCOPE_DEFAULT),
+              jsx('option', { value: PROFILE_SCOPE_ALL, children: '全部配置' }, PROFILE_SCOPE_ALL)
             ]
           }, 'profile-scope'),
           jsx(Button, {
-            'aria-label': hideScheduled ? 'Show scheduled sessions' : 'Hide scheduled sessions',
+            'aria-label': hideScheduled ? '显示定时会话' : '隐藏定时会话',
             className: 'size-6',
             onClick: () => persistPrefs({ hideScheduled: !hideScheduled }),
             size: 'icon-xs',
-            title: hideScheduled ? 'Show scheduled sessions' : 'Hide scheduled sessions',
+            title: hideScheduled ? '显示定时会话' : '隐藏定时会话',
             variant: hideScheduled ? 'secondary' : 'ghost',
             children: jsx(Codicon, { name: 'calendar', size: '0.8rem' })
           }, 'scheduled'),
-          jsx(Button, { 'aria-label': 'Refresh gateway sessions', className: 'size-6', onClick: refresh, size: 'icon-xs', variant: 'ghost', children: jsx(Codicon, { name: 'refresh', size: '0.8rem', spinning: sessionsQuery.isFetching }) }, 'refresh')
+          jsx(Button, { 'aria-label': '刷新会话', className: 'size-6', onClick: refresh, size: 'icon-xs', title: '刷新会话', variant: 'ghost', children: jsx(Codicon, { name: 'refresh', size: '0.8rem', spinning: sessionsQuery.isFetching }) }, 'refresh')
         ]
       }, 'header'),
-      jsx(SearchField, { 'aria-label': 'Search gateway sessions', containerClassName: 'mx-3 mt-1 w-auto', onChange: value => persistPrefs({ search: value }), placeholder: 'Search sessions', value: search }, 'search'),
+      jsx(SearchField, { 'aria-label': '搜索会话', containerClassName: 'mx-3 mt-1.5 w-auto opacity-70! focus-within:opacity-100!', inputClassName: 'placeholder:text-(--ui-text-tertiary)', onChange: value => persistPrefs({ search: value }), placeholder: '搜索会话', value: search }, 'search'),
       jsxs('div', {
-        className: 'flex shrink-0 flex-wrap gap-1 px-2 pt-1.5',
+        className: 'flex shrink-0 flex-nowrap gap-1 overflow-x-auto px-2 pt-1',
         children: [
           ['all', '全部'],
           ['unread', '未读'],
@@ -2410,23 +2694,23 @@ function GatewaySessionsPane() {
           onClick: () => setSessionFilter(value),
           size: 'xs',
           title: value === 'open'
-            ? 'Gateway 持久化状态，不代表模型正在生成'
+            ? '后端会话仍开放，不代表模型正在生成'
             : value === 'unread'
-              ? '未读依据已同步状态，实时状态点可能先更新'
+              ? '未读依据同步状态，实时状态点可能先更新'
               : undefined,
           variant: sessionFilter === value ? 'secondary' : 'ghost',
           children: label
         }, value))
       }, 'filters'),
-      jsx('div', {
+      sourcesIncomplete && (search.trim() || sessionFilter !== 'all') && jsx('div', {
         className: 'shrink-0 px-3 pt-1 text-[0.6rem] leading-tight text-(--ui-text-quaternary)',
-        title: `筛选只覆盖当前已加载窗口，最多 ${GATEWAY_SESSIONS_LIMIT_MAX} 条`,
-        children: `筛选范围：已加载 ${loadedSessionCount} 条${hasExactSessionTotal ? ` / 共 ${totalSessionCount} 条` : ''}；未读依据已同步状态`
-      }, 'filter-scope'),
+        title: `当前搜索和筛选覆盖已加载的 ${loadedSessionCount} 条会话`,
+        children: `当前结果基于已加载的 ${loadedSessionCount} 条会话`
+      }, 'partial-filter-scope'),
       unavailableSources.length > 0 && jsxs('div', {
         className: 'mx-3 mt-1 flex flex-wrap items-center gap-1 rounded border border-(--ui-stroke-tertiary) px-2 py-1 text-[0.62rem] text-(--ui-text-quaternary)',
         children: [
-          jsx('span', { className: 'mr-auto', children: `${unavailableSources.length} source${unavailableSources.length === 1 ? '' : 's'} unavailable` }, 'label'),
+          jsx('span', { className: 'mr-auto', children: `${unavailableSources.length} 个会话来源不可用` }, 'label'),
           ...unavailableSources.map(group => jsx(Button, {
             disabled: Boolean(retryingSourceKey),
             onClick: () => void retryGatewaySource(group),
@@ -2440,8 +2724,8 @@ function GatewaySessionsPane() {
       projects.length === 0
         ? jsx(EmptyState, {
             className: 'flex-1 min-h-0',
-            description: search ? 'Try a different title, project, or gateway name.' : 'Create a chat from a project header, or wait for an existing session to appear.',
-            title: search ? 'No matching sessions.' : 'No sessions found.'
+            description: search ? '请尝试其他标题、项目或网关名称。' : '可以从项目标题右侧新建会话。',
+            title: search ? '没有匹配的会话' : '暂无会话'
           }, 'empty')
         : jsx('div', {
             className: 'min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 pb-3 pt-2',
@@ -2455,9 +2739,13 @@ function GatewaySessionsPane() {
                   ? gatewayProjectToggleRow(renderRow.project, renderRow.remaining, revealProjectSessions, 'more')
                   : renderRow.type === 'collapse'
                     ? gatewayProjectToggleRow(renderRow.project, 0, collapseProjectSessions, 'collapse')
-                    : renderRow.type === 'pin-divider'
-                      ? gatewayPinDividerRow(renderRow.project)
-                      : gatewaySessionRow(renderRow.project, renderRow.session, focusedStoredSessionId, focusedSessionOwner, opening, open, applySessionChange)),
+                    : renderRow.type === 'project-loading'
+                      ? gatewayProjectLoadRow(renderRow.project, retryProjectSessions, 'loading')
+                      : renderRow.type === 'project-error'
+                        ? gatewayProjectLoadRow(renderRow.project, retryProjectSessions, 'error')
+                        : renderRow.type === 'pin-divider'
+                          ? gatewayPinDividerRow(renderRow.project)
+                          : gatewaySessionRow(renderRow.project, renderRow.session, focusedStoredSessionId, focusedSessionOwner, opening, open, applySessionChange)),
               renderedRows.bottomSpacer > 0 && jsx('div', { 'aria-hidden': true, style: { height: renderedRows.bottomSpacer } }, 'virtual-bottom')
             ]
           }, 'session-list')
@@ -2533,7 +2821,7 @@ function createElementStyleOwner() {
 export default {
   id: ID,
   name: 'Codex Studio',
-  description: 'Codex Studio: Cold White theme, a cross-gateway session pane, command palette, and unread status chip.',
+  description: 'Codex Studio：纯白主题、跨网关会话侧栏、命令面板和未读状态。',
   register(ctx) {
     gatewaySessionStorage = ctx.storage
     gatewaySessionStorageOwner = ctx
@@ -2576,8 +2864,8 @@ export default {
       data: {
         id: 'codex-studio.refresh',
         action: 'codex-studio.refresh',
-        label: 'Codex Studio: Refresh sessions',
-        keywords: ['codex', 'studio', 'gateway', 'sessions', 'refresh', 'reload'],
+        label: 'Codex Studio：刷新会话',
+        keywords: ['codex', 'studio', 'gateway', 'sessions', 'refresh', 'reload', '刷新', '会话', '网关'],
         run: () => void refreshGatewaySessionQueries()
       }
     })
@@ -2587,8 +2875,8 @@ export default {
       area: PALETTE_AREA,
       data: {
         id: 'codex-studio.theme',
-        label: 'Codex Studio: Apply Hermes Cold White',
-        keywords: ['codex', 'studio', 'theme', 'cold', 'white', 'light'],
+        label: 'Codex Studio：应用 Hermes Cold White',
+        keywords: ['codex', 'studio', 'theme', 'cold', 'white', 'light', '主题', '纯白'],
         run: () => {
           if (requestTheme(THEME_NAME)) {
             ctx.storage.set('theme-revision', THEME_REVISION)
@@ -2604,7 +2892,7 @@ export default {
         id: 'codex-studio.refresh',
         category: 'view',
         defaults: ['mod+alt+g'],
-        label: 'Codex Studio: Refresh sessions',
+        label: 'Codex Studio：刷新会话',
         run: () => void refreshGatewaySessionQueries()
       }
     })

@@ -29,6 +29,9 @@ assert.match(source, /EmptyState/, 'empty pane states must use the SDK empty sur
 assert.match(source, /ErrorState/, 'failed pane states must use the SDK error surface')
 assert.match(source, /function gatewayInboxSummary\(/, 'inbox counts must be a pure helper')
 assert.match(source, /function refreshGatewaySessionQueries\(/, 'palette and pane refresh must share one helper')
+assert.match(source, /const \$gatewayProjectDataRevision = atom\(0\)/, 'all refresh surfaces must share a project-cache revision')
+assert.match(source, /\$gatewayProjectDataRevision\.set\(\$gatewayProjectDataRevision\.get\(\) \+ 1\)/, 'refresh must invalidate expanded project caches')
+assert.match(source, /const projectDataRevision = useValue\(\$gatewayProjectDataRevision\)/, 'the pane must observe refreshes triggered outside itself')
 assert.doesNotMatch(source, /ctx\.rest\(/, 'gateway sessions already use host RPC; do not add an unused plugin backend')
 assert.doesNotMatch(source, /ctx\.socket\(/, 'gateway sessions already use host.onEvent; do not add an unused plugin socket')
 
