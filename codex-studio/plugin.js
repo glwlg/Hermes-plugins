@@ -5,16 +5,16 @@
  * workflow and applies the Cold White visual system through the Desktop Plugin
  * SDK:
  *
- *   - sidebar: the semantic Hermes sidebar surface
- *   - conversation, assistant messages, dialogs, and composer: cold white
+ *   - sidebar, title bar, and status chrome: paper gray
+ *   - conversation, assistant messages, dialogs, and composer: pure white
  *
  * The Codex Studio pane is a genuine `area: 'panes'` contribution. It
  * aggregates credential-free profile routes, reads each source's persisted
  * sessions through the owning connection, and opens a row with that exact
  * route. The pane is intentionally separate from Hermes's native $sessions
  * tree; no React-owned sidebar nodes are mutated.
- *   - user message bubble: cool blue-white
- *   - code blocks: graphite; inline code: pale blue-gray
+ *   - user message bubble: cool paper gray
+ *   - code blocks: graphite; inline code: pale zinc
  *   - message/composer column: 46rem (~736px), centered in the main pane
  *   - composer: keeps Hermes's measured empty/text/attachment heights, with a
  *     rounded surface and a soft floating shadow
@@ -88,7 +88,7 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'codex-studio'
 const THEME_NAME = 'hermes-cold-white'
-const THEME_REVISION = 15
+const THEME_REVISION = 17
 const MESSAGE_COLUMN_WIDTH = '46rem'
 const USER_MESSAGE_MAX_WIDTH = '70%'
 const COMPOSER_RADIUS = '1.25rem'
@@ -168,34 +168,34 @@ function writeGatewaySessionPreferences(next) {
 const CODEX_THEME = {
   name: THEME_NAME,
   label: 'Hermes Cold White',
-  description: 'A light-only cold-white workbench with blue-gray structure, ink controls, and graphite code surfaces.',
+  description: 'A light-only workbench with paper rails around a pure-white conversation, ink controls, and graphite code surfaces.',
   colors: {
-    background: '#f8f9ff',
+    background: '#ffffff',
     foreground: '#0d1c2f',
     card: '#ffffff',
     cardForeground: '#0d1c2f',
-    muted: '#eff4ff',
+    muted: '#f5f5f7',
     mutedForeground: '#68717a',
     popover: '#ffffff',
     popoverForeground: '#0d1c2f',
     primary: '#20262a',
-    primaryForeground: '#f8f9ff',
-    secondary: '#eff4ff',
+    primaryForeground: '#ffffff',
+    secondary: '#f5f5f7',
     secondaryForeground: '#34465e',
-    accent: '#e8efff',
+    accent: '#ebebed',
     accentForeground: '#0d1c2f',
-    border: '#d3dde9',
-    input: '#d3dde9',
+    border: '#d4d4d8',
+    input: '#d4d4d8',
     ring: '#0d1c2f',
     midground: '#0d1c2f',
     midgroundForeground: '#ffffff',
     composerRing: '#20262a',
     destructive: '#b64b4b',
     destructiveForeground: '#ffffff',
-    sidebarBackground: '#eff4ff',
-    sidebarBorder: '#d3dde9',
+    sidebarBackground: '#f5f5f7',
+    sidebarBorder: '#d4d4d8',
     userBubble: '#f3f4f5',
-    userBubbleBorder: '#d3dde9'
+    userBubbleBorder: '#d4d4d8'
   },
   typography: {
     fontSans: '"Hanken Grotesk", "Segoe UI", system-ui, sans-serif',
@@ -212,42 +212,42 @@ CODEX_THEME.darkColors = CODEX_THEME.colors
 // contribution supplies the authored palette; these values remove normal
 // translucency/mix rounding so the requested RGB levels are exact.
 const LIGHT_ROOT_TOKENS = {
-  '--background': '#f8f9ff',
+  '--background': '#ffffff',
   '--foreground': '#0d1c2f',
   '--composer-fill': '#ffffff',
 
-  '--dt-background': '#f8f9ff',
+  '--dt-background': '#ffffff',
   '--dt-card': '#ffffff',
   '--dt-popover': '#ffffff',
-  '--dt-sidebar-bg': '#eff4ff',
+  '--dt-sidebar-bg': '#f5f5f7',
   '--dt-user-bubble': '#f3f4f5',
-  '--dt-user-bubble-border': '#d3dde9',
+  '--dt-user-bubble-border': '#d4d4d8',
   '--ui-bg-card': '#ffffff',
-  '--ui-bg-chrome': '#f8f9ff',
-  // Keep the inherited editor surface cold-white; fenced code cards receive
+  '--ui-bg-chrome': '#f5f5f7',
+  // Keep the inherited editor surface white; fenced code cards receive
   // their graphite treatment at the stable [data-slot='code-card'] below.
-  '--ui-bg-editor': '#f8f9ff',
+  '--ui-bg-editor': '#ffffff',
   '--ui-bg-elevated': '#ffffff',
   '--ui-bg-input': '#ffffff',
-  '--ui-bg-sidebar': '#eff4ff',
+  '--ui-bg-sidebar': '#f5f5f7',
   '--ui-chat-bubble-background': '#ffffff',
   '--ui-chat-bubble-opaque-background': '#ffffff',
-  '--ui-chat-surface-background': '#f8f9ff',
-  '--ui-editor-surface-background': '#f8f9ff',
-  '--ui-inline-code-background': '#e8efff',
+  '--ui-chat-surface-background': '#ffffff',
+  '--ui-editor-surface-background': '#ffffff',
+  '--ui-inline-code-background': '#ececee',
   '--ui-inline-code-foreground': '#0d1c2f',
-  '--ui-sidebar-surface-background': '#eff4ff',
-  '--ui-surface-background': '#f8f9ff',
+  '--ui-sidebar-surface-background': '#f5f5f7',
+  '--ui-surface-background': '#f5f5f7',
   '--ui-widget-surface-background': '#ffffff',
-  '--ui-stroke-primary': '#b8c5d8',
-  '--ui-stroke-secondary': '#c6d0e0',
-  '--ui-stroke-tertiary': '#d3dde9',
-  '--ui-stroke-quaternary': '#e6eeff',
+  '--ui-stroke-primary': '#c4c4c8',
+  '--ui-stroke-secondary': '#d0d0d4',
+  '--ui-stroke-tertiary': '#d4d4d8',
+  '--ui-stroke-quaternary': '#ececee',
   '--ui-text-quaternary': '#68717a',
-  '--ui-control-hover-background': '#e8efff',
-  '--ui-control-active-background': '#dfe8fa',
-  '--ui-row-hover-background': '#e8efff',
-  '--ui-row-active-background': '#e7edf6'
+  '--ui-control-hover-background': '#ececee',
+  '--ui-control-active-background': '#e4e4e7',
+  '--ui-row-hover-background': '#ececee',
+  '--ui-row-active-background': '#e4e4e7'
 }
 
 // Small Lucide/Tabler-like line drawings for the most visible Hermes chrome.
@@ -353,6 +353,10 @@ function modernIconStylesheet() {
 
   return `${iconRules}span:has(> img[src*="nous-girl.jpg"]){position:relative!important;background-color:var(--ui-bg-elevated)!important}span:has(> img[src*="nous-girl.jpg"])>img[src*="nous-girl.jpg"]{opacity:0!important}span:has(> img[src*="nous-girl.jpg"])::after{content:"";position:absolute;inset:20%;display:block;background-color:var(--ui-accent);-webkit-mask-image:${brandMask};mask-image:${brandMask};-webkit-mask-position:center;mask-position:center;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;-webkit-mask-size:contain;mask-size:contain}
 .codex-gateway-session-row{position:relative;isolation:isolate}
+.codex-gateway-session-row [data-session-status]:not(:has([role="status"])){display:none!important}
+.codex-gateway-session-row [data-session-menu]{opacity:0;pointer-events:none}
+.codex-gateway-session-row:is(:hover,:focus-within) [data-session-status]{visibility:hidden}
+.codex-gateway-session-row:is(:hover,:focus-within) [data-session-menu],.codex-gateway-session-row [data-session-menu]:has([data-state="open"]){opacity:1;pointer-events:auto}
 .codex-gateway-session-row:has([class~="bg-(--ui-accent)"])::before,.codex-gateway-session-row:has([class~="border-(--ui-accent)"])::before{content:"";pointer-events:none;position:absolute;z-index:-1;inset:0;border-radius:8px;padding:1px;background:conic-gradient(from var(--codex-gateway-arc-angle,0deg),transparent 0deg,transparent 258deg,#1f2937 286deg,#64748b 326deg,transparent 360deg);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;animation:codex-gateway-running-border 2s linear infinite}
 @property --codex-gateway-arc-angle{syntax:"<angle>";initial-value:0deg;inherits:false}
 @keyframes codex-gateway-running-border{to{--codex-gateway-arc-angle:360deg}}
@@ -517,6 +521,14 @@ function sessionArchived(session) {
 
 function sessionActive(session) {
   return sessionBooleanValue(session?.is_active)
+}
+
+function gatewayPinDividerRow(project) {
+  return jsx('div', {
+    'aria-hidden': true,
+    className: 'mx-2 my-1 h-px bg-(--ui-stroke-tertiary)',
+    style: { marginLeft: '1.5rem', width: 'calc(100% - 2.25rem)' }
+  }, `pin-divider:${project.key}`)
 }
 
 function eventSessionId(event) {
@@ -1628,17 +1640,34 @@ function gatewayRenderRows(projects, collapsed, revealed = new Set()) {
     }
 
     const sessions = Array.isArray(project.sessions) ? project.sessions : []
-    const showAll = revealed.has(project.key) || sessions.length <= PROJECT_SESSION_PREVIEW_LIMIT
+    const canExpand = sessions.length > PROJECT_SESSION_PREVIEW_LIMIT
+    const showAll = revealed.has(project.key) || !canExpand
     const visible = showAll ? sessions : sessions.slice(0, PROJECT_SESSION_PREVIEW_LIMIT)
+    let sawUnpinned = false
     for (const session of visible) {
+      if (!sawUnpinned && !sessionPinned(session) && visible.some(row => sessionPinned(row))) {
+        rows.push({ key: `pin-divider:${project.key}`, type: 'pin-divider', project })
+        sawUnpinned = true
+      }
+      if (!sessionPinned(session)) {
+        sawUnpinned = true
+      }
       rows.push({ key: `session:${project.key}:${session.id}`, type: 'session', project, session })
     }
-    if (!showAll) {
+    const hiddenLoaded = Math.max(0, sessions.length - visible.length)
+    if (hiddenLoaded > 0) {
       rows.push({
         key: `more:${project.key}`,
         type: 'more',
         project,
-        remaining: sessions.length - visible.length
+        remaining: hiddenLoaded
+      })
+    }
+    if (showAll && (sessions.length > PROJECT_SESSION_PREVIEW_LIMIT || revealed.has(project.key))) {
+      rows.push({
+        key: `collapse:${project.key}`,
+        type: 'collapse',
+        project
       })
     }
   }
@@ -1720,17 +1749,13 @@ function gatewaySessionRow(project, session, focusedStoredSessionId, focusedSess
         onClick: () => void open(project, session),
         title: session.preview || title,
         type: 'button',
-        children: [
-          sessionPinned(session) && jsx(Codicon, { name: 'pin', className: 'shrink-0 text-(--ui-accent)', size: '0.72rem' }, 'pinned'),
-          jsx(SessionStatusDot, { session, storedSessionId: session.id }, 'status'),
-          jsxs('span', {
-            className: 'min-w-0 flex flex-1 flex-col',
-            children: [
-              jsx('span', { className: 'block min-w-0 truncate font-medium text-foreground/85', children: title }, 'title'),
-              jsx('span', { className: 'block truncate text-[0.64rem] text-(--ui-text-quaternary)', children: session.preview || `${session.message_count || 0} messages` }, 'preview')
-            ]
-          }, 'content')
-        ]
+        children: jsxs('span', {
+          className: 'min-w-0 flex flex-1 flex-col',
+          children: [
+            jsx('span', { className: 'block min-w-0 truncate font-medium text-foreground/85', children: title }, 'title'),
+            jsx('span', { className: 'block truncate text-[0.64rem] text-(--ui-text-quaternary)', children: session.preview || `${session.message_count || 0} messages` }, 'preview')
+          ]
+        })
       }, 'open'),
       jsx('button', {
         'aria-label': `Open session ${title}`,
@@ -1741,45 +1766,61 @@ function gatewaySessionRow(project, session, focusedStoredSessionId, focusedSess
         type: 'button',
         children: openingNow ? jsx(Codicon, { name: 'loading', size: '0.75rem', spinning: true }) : sessionRowTime(session)
       }, 'time'),
-      jsx('div', {
-        className: 'pointer-events-none flex min-w-8 shrink-0 items-center justify-end px-1 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100',
+      jsxs('div', {
+        className: 'relative flex min-w-8 shrink-0 items-center justify-end px-1',
         'data-session-actions': true,
         'aria-hidden': false,
         'data-row-actions': true,
         style: { minWidth: '2rem' },
-        children: jsx(SessionActionsMenu, {
-          children: jsx(Button, {
-            'aria-label': `Actions for ${title}`,
-            className: 'size-6 rounded-[4px] bg-transparent text-(--ui-text-tertiary) hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground',
-            size: 'icon-xs',
-            variant: 'ghost',
-            children: jsx(Codicon, { name: 'kebab-vertical', size: '0.8rem' })
-          }),
-          onChanged: applySessionChange,
-          project,
-          session
-        })
+        children: [
+          jsx('span', {
+            className: 'pointer-events-none flex items-center justify-center',
+            'data-session-status': true,
+            children: jsx(SessionStatusDot, { session, storedSessionId: session.id })
+          }, 'status'),
+          jsx('div', {
+            className: 'absolute inset-y-0 right-0 flex items-center justify-end px-1',
+            'data-session-menu': true,
+            children: jsx(SessionActionsMenu, {
+              children: jsx(Button, {
+                'aria-label': `Actions for ${title}`,
+                className: 'size-6 rounded-[4px] bg-transparent text-(--ui-text-tertiary) hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground',
+                size: 'icon-xs',
+                variant: 'ghost',
+                children: jsx(Codicon, { name: 'kebab-vertical', size: '0.8rem' })
+              }),
+              onChanged: applySessionChange,
+              project,
+              session
+            })
+          }, 'menu')
+        ]
       }, 'actions')
     ]
   }, sessionKey)
   return jsx(SessionContextMenu, { children: row, onChanged: applySessionChange, project, session }, sessionKey)
 }
 
-function gatewayProjectMoreRow(project, remaining, reveal) {
+function gatewayProjectToggleRow(project, remaining, onToggle, mode) {
   const count = Math.max(0, Number(remaining) || 0)
+  const collapsing = mode === 'collapse'
+  const label = collapsing ? '收起' : '展开显示'
+  const extra = collapsing ? '' : ` ${count}`
   return jsx('div', {
-    className: 'px-1.5',
+    className: 'min-w-0',
     style: { marginLeft: '1.5rem', width: 'calc(100% - 1.5rem)' },
     children: jsx(Button, {
-      'aria-label': `展开显示 ${projectDisplayLabel(project)} 的另外 ${count} 个会话`,
-      className: 'h-7 w-full justify-center rounded-md border border-(--ui-stroke-tertiary) bg-transparent text-[0.62rem] text-(--ui-text-quaternary) hover:bg-(--ui-row-hover-background) hover:text-foreground',
-      onClick: () => reveal(project.key),
+      'aria-label': collapsing
+        ? `收起 ${projectDisplayLabel(project)} 的额外会话`
+        : `展开显示 ${projectDisplayLabel(project)} 的另外 ${count} 个会话`,
+      className: 'h-7 justify-start rounded-md bg-transparent px-2 py-1.5 text-[0.62rem] font-medium text-(--ui-text-quaternary) hover:bg-(--ui-row-hover-background) hover:text-foreground',
+      onClick: () => onToggle(project.key),
       size: 'xs',
-      title: `还有 ${count} 个会话`,
+      title: collapsing ? '收起到最近 5 个会话' : `还有 ${count} 个会话`,
       variant: 'ghost',
-      children: '展开显示'
+      children: `${label}${extra}`
     })
-  }, `more:${project.key}`)
+  }, `${collapsing ? 'collapse' : 'more'}:${project.key}`)
 }
 
 function eventRouteKey(event) {
@@ -1998,8 +2039,6 @@ function GatewaySessionsPane() {
   const loadedSessionCount = sourceGroups.reduce((count, group) => count + group.sessions.length, 0)
   const totalSessionCount = sourceGroups.reduce((count, group) => count + Math.max(group.sessions.length, Number(group.total) || 0), 0)
   const hasExactSessionTotal = sourceGroups.length > 0 && sourceGroups.every(group => !group.error && group.totalExact)
-  const hasMoreSessions = sessionLimit < GATEWAY_SESSIONS_LIMIT_MAX && sourceGroups.some(group => group.hasMore)
-  const nextSessionLimit = Math.min(GATEWAY_SESSIONS_LIMIT_MAX, Math.max(sessionLimit + 1, sessionLimit * 2))
 
   // Groups are only a transport shape. The UI deliberately flattens every
   // route's projects into one list; route metadata stays on each project so a
@@ -2152,6 +2191,15 @@ function GatewaySessionsPane() {
       if (current.has(key)) return current
       const next = new Set(current)
       next.add(key)
+      return next
+    })
+  }
+
+  const collapseProjectSessions = key => {
+    setRevealedProjects(current => {
+      if (!current.has(key)) return current
+      const next = new Set(current)
+      next.delete(key)
       return next
     })
   }
@@ -2404,23 +2452,13 @@ function GatewaySessionsPane() {
               ...renderedRows.rows.map(renderRow => renderRow.type === 'project'
                 ? gatewayProjectHeaderRow(renderRow.project, collapsed, toggle, newChat)
                 : renderRow.type === 'more'
-                  ? gatewayProjectMoreRow(renderRow.project, renderRow.remaining, revealProjectSessions)
-                  : gatewaySessionRow(renderRow.project, renderRow.session, focusedStoredSessionId, focusedSessionOwner, opening, open, applySessionChange)),
-              renderedRows.bottomSpacer > 0 && jsx('div', { 'aria-hidden': true, style: { height: renderedRows.bottomSpacer } }, 'virtual-bottom'),
-              hasMoreSessions && jsx('div', {
-                className: 'flex justify-center px-2 py-2',
-                children: jsx(Button, {
-                  disabled: sessionsQuery.isFetching,
-                  onClick: () => $gatewaySessionLimit.set(nextSessionLimit),
-                  size: 'xs',
-                  variant: 'ghost',
-                  children: sessionsQuery.isFetching
-                    ? '加载中…'
-                    : hasExactSessionTotal
-                      ? `加载更多（已加载 ${loadedSessionCount} / ${totalSessionCount}）`
-                      : `加载更多（已加载 ${loadedSessionCount}）`
-                })
-              }, 'load-more')
+                  ? gatewayProjectToggleRow(renderRow.project, renderRow.remaining, revealProjectSessions, 'more')
+                  : renderRow.type === 'collapse'
+                    ? gatewayProjectToggleRow(renderRow.project, 0, collapseProjectSessions, 'collapse')
+                    : renderRow.type === 'pin-divider'
+                      ? gatewayPinDividerRow(renderRow.project)
+                      : gatewaySessionRow(renderRow.project, renderRow.session, focusedStoredSessionId, focusedSessionOwner, opening, open, applySessionChange)),
+              renderedRows.bottomSpacer > 0 && jsx('div', { 'aria-hidden': true, style: { height: renderedRows.bottomSpacer } }, 'virtual-bottom')
             ]
           }, 'session-list')
     ]
@@ -2616,12 +2654,12 @@ export default {
         document.querySelectorAll("[data-slot='aui_thread-content']").forEach(element => {
           elementStyles.set(element, 'max-width', MESSAGE_COLUMN_WIDTH)
           elementStyles.set(element, '--composer-width', MESSAGE_COLUMN_WIDTH)
-          elementStyles.set(element, 'background-color', '#f8f9ff')
+          elementStyles.set(element, 'background-color', '#ffffff')
         })
 
         document
           .querySelectorAll("[data-slot='aui_thread-viewport'], [data-chat-surface], [data-slot='composer-bounds']")
-          .forEach(element => elementStyles.set(element, 'background-color', '#f8f9ff'))
+          .forEach(element => elementStyles.set(element, 'background-color', '#ffffff'))
 
         document.querySelectorAll("[data-slot='composer-dock']").forEach(element => {
           elementStyles.set(element, '--composer-width', MESSAGE_COLUMN_WIDTH)
@@ -2645,11 +2683,11 @@ export default {
         // different measured footprints.
 
         document.querySelectorAll("[data-slot='aui_assistant-message-root']").forEach(element => {
-          elementStyles.set(element, 'background-color', '#f8f9ff')
+          elementStyles.set(element, 'background-color', '#ffffff')
         })
 
         document.querySelectorAll("[data-slot='aui_user-message-root']").forEach(element => {
-          elementStyles.set(element, 'background-color', '#f8f9ff')
+          elementStyles.set(element, 'background-color', '#ffffff')
         })
 
         document.querySelectorAll("[data-slot='aui_user-message-root'] .composer-human-message").forEach(element => {
@@ -2660,7 +2698,7 @@ export default {
           elementStyles.set(element, 'margin-left', 'auto')
           elementStyles.set(element, 'border-radius', USER_MESSAGE_RADIUS)
           elementStyles.set(element, 'background-color', '#f3f4f5')
-          elementStyles.set(element, 'border-color', '#d3dde9')
+          elementStyles.set(element, 'border-color', '#d4d4d8')
         })
 
       }

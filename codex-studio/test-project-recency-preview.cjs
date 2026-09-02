@@ -24,7 +24,24 @@ function extractFunction(name) {
 
 assert.match(source, /const PROJECT_SESSION_PREVIEW_LIMIT = 5/, 'preview must default to five sessions')
 assert.match(source, /type: 'more'/, 'extra sessions must collapse behind a load-more row')
+assert.match(source, /type: 'collapse'/, 'revealed projects must keep a collapse row under the extra sessions')
 assert.match(source, /展开显示/, 'load-more control must match the Codex expand label')
+assert.doesNotMatch(source, /: ' 更多'/, 'expand must not advertise leftover gateway pages as 更多')
+assert.match(source, /收起/, 'revealed projects must expose a collapse control')
+assert.match(source, /function gatewayProjectToggleRow\(/, 'expand and collapse must share one text-aligned row')
+assert.match(source, /justify-start/, 'toggle control must align with session titles, not center across the rail')
+assert.doesNotMatch(source, /justify-center rounded-md border border-\(--ui-stroke-tertiary\) bg-transparent text-\[0\.62rem\]/, 'the old full-width bordered expand button must not remain')
+assert.match(source, /px-2 py-1\.5/, 'toggle padding must match the session title track')
+assert.doesNotMatch(source, /function gatewayProjectMoreRow\(/)
+assert.doesNotMatch(source, /加载更多（已加载/, 'global source pagination must not compete with per-project expand')
+assert.doesNotMatch(source, /\$gatewaySessionLimit\.set\(nextSessionLimit\)/, 'the pane must not grow the shared session window from a footer button')
+assert.match(source, /hiddenLoaded > 0/, 'expand is only for already-loaded sessions still hidden behind the preview')
+assert.match(source, /type: 'pin-divider'/, 'pinned and unpinned sessions must be separated by a thin divider')
+assert.match(source, /data-session-status/, 'status marks belong in the trailing action slot, not the title lead')
+assert.match(source, /data-session-menu/, 'the kebab must occupy the same trailing slot as the status mark')
+assert.match(source, /\[data-session-status\]:not\(:has\(\[role="status"\]\)\)\{display:none!important\}/, 'idle SessionStatusDot marks must not occupy the kebab slot')
+assert.doesNotMatch(source, /sessionPinned\(session\) && jsx\(Codicon, \{ name: 'pin'/, 'pinned sessions must not keep a lead pin glyph')
+assert.doesNotMatch(source, /jsx\(SessionStatusDot, \{ session, storedSessionId: session\.id \}, 'status'\)/)
 
 const names = [
   'sessionBooleanValue',
@@ -45,7 +62,7 @@ const context = {
 }
 vm.createContext(context)
 vm.runInContext(
-  `${names.map(extractFunction).join('\n')}\nglobalThis.api = { compareProjects, gatewayRenderRows, projectLatestActivity }`,
+  `${names.map(extractFunction).join('\n')}\nglobalThis.api = { compareProjects, compareSessions, gatewayRenderRows, projectLatestActivity }`,
   context
 )
 
@@ -111,15 +128,82 @@ const revealedRows = context.api.gatewayRenderRows(
 )
 assert.deepEqual(
   JSON.parse(JSON.stringify(revealedRows.map(row => row.type))),
-  ['project', 'session', 'session', 'session', 'session', 'session', 'session', 'session']
+  ['project', 'session', 'session', 'session', 'session', 'session', 'session', 'session', 'collapse']
 )
 assert.equal(revealedRows.some(row => row.type === 'more'), false)
+assert.equal(revealedRows.at(-1).type, 'collapse')
+
+const five = Array.from({ length: 5 }, (_, index) => ({ id: `f${index}`, last_active: 50 - index }))
+const fiveRows = context.api.gatewayRenderRows(
+  [{ key: 'p1', sessions: five }],
+  new Set()
+)
+assert.equal(fiveRows.some(row => row.type === 'more' || row.type === 'collapse'), false, 'five loaded sessions stay fully visible')
+
+const twoWithMore = context.api.gatewayRenderRows(
+  [{ key: 'p1', sessions: five.slice(0, 2), hasMore: true }],
+  new Set()
+)
+assert.equal(twoWithMore.some(row => row.type === 'more'), false, 'a short project must not inherit a sibling source window as its own expand row')
+
+const fiveWithMore = context.api.gatewayRenderRows(
+  [{ key: 'p1', sessions: five, hasMore: true }],
+  new Set()
+)
+assert.equal(fiveWithMore.some(row => row.type === 'more'), false, 'gateway leftovers must not mint an expand row when the project already shows every loaded session')
+
+const fiveRevealedWithMore = context.api.gatewayRenderRows(
+  [{ key: 'p1', sessions: five, hasMore: true, sourceTotal: 12 }],
+  new Set(),
+  new Set(['p1'])
+)
+assert.deepEqual(
+  JSON.parse(JSON.stringify(fiveRevealedWithMore.map(row => row.type))),
+  ['project', 'session', 'session', 'session', 'session', 'session', 'collapse'],
+  'once a project is revealed, do not keep a dead expand row just because the gateway window has leftovers'
+)
+
+const twelve = Array.from({ length: 12 }, (_, index) => ({ id: `t${index}`, last_active: 120 - index }))
+const twelveRevealedWithGatewayLeftovers = context.api.gatewayRenderRows(
+  [{ key: 'p1', sessions: twelve, hasMore: true, sourceTotal: 40 }],
+  new Set(),
+  new Set(['p1'])
+)
+assert.deepEqual(
+  JSON.parse(JSON.stringify(twelveRevealedWithGatewayLeftovers.map(row => row.type))),
+  ['project', ...Array(12).fill('session'), 'collapse'],
+  'a fully revealed project must not advertise expand-more from a sibling source window'
+)
+assert.equal(twelveRevealedWithGatewayLeftovers.some(row => row.type === 'more'), false)
 
 const collapsedRows = context.api.gatewayRenderRows(
   [{ key: 'p1', sessions: seven }],
   new Set(['p1'])
 )
 assert.deepEqual(JSON.parse(JSON.stringify(collapsedRows.map(row => row.type))), ['project'])
+
+const mixed = [
+  { id: 'u1', last_active: 40, pinned: false },
+  { id: 'p1', last_active: 10, pinned: true },
+  { id: 'u2', last_active: 30, pinned: false },
+  { id: 'p2', last_active: 20, pinned: true }
+]
+const mixedRows = context.api.gatewayRenderRows(
+  [{ key: 'p1', sessions: mixed.sort(context.api.compareSessions) }],
+  new Set()
+)
+assert.deepEqual(
+  JSON.parse(JSON.stringify(mixedRows.map(row => [row.type, row.session?.id || '']))),
+  [
+    ['project', ''],
+    ['session', 'p2'],
+    ['session', 'p1'],
+    ['pin-divider', ''],
+    ['session', 'u1'],
+    ['session', 'u2']
+  ],
+  'pinned sessions stay first; a thin divider sits before the first unpinned row'
+)
 
 const stickyNames = [
   'sessionBooleanValue',
