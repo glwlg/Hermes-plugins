@@ -5,7 +5,9 @@ const assert = require('assert/strict')
 const pluginPath = path.join(__dirname, 'plugin.js')
 const source = fs.readFileSync(pluginPath, 'utf8')
 
-assert.match(source, /const THEME_REVISION = 17/, 'conversation canvas change must bump the theme revision so existing installs reapply')
+assert.match(source, /const THEME_REVISION = (\d+)/, 'theme revision is defined')
+const revisionMatch = source.match(/const THEME_REVISION = (\d+)/)
+assert.ok(Number(revisionMatch[1]) >= 18, 'adding the Liquid Glass theme must bump the theme revision so existing installs reapply')
 assert.match(source, /label: 'Hermes Cold White'/)
 assert.match(source, /const THEME_NAME = 'hermes-cold-white'/)
 
