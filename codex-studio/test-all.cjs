@@ -6,6 +6,7 @@ const checks = [
   ['syntax', ['--check', path.join(root, 'plugin.js')]],
   ['project hydration', [path.join(root, 'test-project-hydration.cjs')]],
   ['project cache', [path.join(root, 'test-project-cache.cjs')]],
+  ['project fallback + partial summary', [path.join(root, 'test-project-fallback.cjs')]],
   ['project recency and rows', [path.join(root, 'test-project-recency-preview.cjs')]],
   ['sidebar polish', [path.join(root, 'test-sidebar-polish.cjs')]],
   ['inbox surfaces', [path.join(root, 'test-inbox-surfaces.cjs')]],

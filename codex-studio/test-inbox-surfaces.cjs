@@ -69,6 +69,7 @@ assert.deepEqual(JSON.parse(JSON.stringify(summary)), {
   failed: 1,
   loaded: 2,
   open: 1,
+  partial: false,
   pinned: 1,
   unread: 1
 })

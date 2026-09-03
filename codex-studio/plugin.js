@@ -1203,9 +1203,14 @@ function gatewayInboxSummary(groups, hideScheduled = true) {
   let open = 0
   let pinned = 0
   let unread = 0
+  let partial = false
 
   for (const group of list) {
-    if (group?.error) failed += 1
+    if (group?.error) {
+      failed += 1
+      continue
+    }
+    if (group?.hasMore) partial = true
     const sessions = Array.isArray(group?.sessions) ? group.sessions : []
     for (const session of sessions) {
       if (hideScheduled && sessionIsScheduled(session)) continue
@@ -1216,7 +1221,7 @@ function gatewayInboxSummary(groups, hideScheduled = true) {
     }
   }
 
-  return { failed, loaded, open, pinned, unread }
+  return { failed, loaded, open, partial, pinned, unread }
 }
 
 function refreshGatewaySessionQueries({ refreshRoutes = true } = {}) {
@@ -1443,6 +1448,15 @@ function clearGatewayProjectSessionsCache(project) {
   }
 }
 
+function isGatewayUnknownMethodError(error) {
+  const message = String(error?.message || '').toLowerCase()
+  return message.includes('unknown method:')
+}
+
+function projectSessionsUnsupportedMessage() {
+  return '当前网关 Hermes 版本过旧，不支持读取项目会话。请升级该网关的 Hermes 后重试。'
+}
+
 async function fetchGatewayProjectSessions(project) {
   const key = gatewayProjectSessionsCacheKey(project)
   if (!key || typeof host.requestProfile !== 'function') {
@@ -1454,6 +1468,18 @@ async function fetchGatewayProjectSessions(project) {
   }
   if (cached?.promise) {
     return cached.promise
+  }
+
+  // Old gateways answer with JSON-RPC -32601 "unknown method". That verdict is
+  // stable for the gateway's lifetime, so cache it and serve the tree preview
+  // instead of letting the user retry a call that can never succeed.
+  const previewFallback = () => {
+    const fallback = Array.isArray(project.previewSessions) && project.previewSessions.length
+      ? project.previewSessions
+      : (Array.isArray(project.prefetchedSessions) && project.prefetchedSessions.length
+        ? project.prefetchedSessions
+        : project.sessions)
+    return Array.isArray(fallback) ? fallback : []
   }
 
   const promise = Promise.resolve()
@@ -1471,6 +1497,11 @@ async function fetchGatewayProjectSessions(project) {
       return sessions
     })
     .catch(error => {
+      if (isGatewayUnknownMethodError(error)) {
+        const sessions = previewFallback()
+        gatewayProjectSessionsCache.set(key, { sessions, unsupported: true })
+        return sessions
+      }
       gatewayProjectSessionsCache.delete(key)
       throw error
     })
@@ -1872,6 +1903,7 @@ function gatewayProjectHeaderRow(project, collapsed, toggle, newChat) {
           sourceBadge && jsx('span', { className: 'max-w-28 shrink-0 truncate px-1 text-[0.58rem] text-(--ui-text-quaternary)', title: sourceBadge, children: sourceBadge }, 'source'),
           jsx('span', {
             className: 'text-[0.6rem] tabular-nums text-(--ui-text-quaternary)',
+            title: project.loadUnsupported ? projectSessionsUnsupportedMessage() : undefined,
             children: Math.max(project.sessions.length, Number(project.sessionCount) || 0)
           }, 'count')
         ]
@@ -2152,8 +2184,12 @@ function GatewayInboxChip() {
   const label = inbox.failed
     ? `${inbox.failed} 个会话来源不可用`
     : inbox.unread
-      ? `跨网关有 ${inbox.unread} 个未读会话`
-      : `跨网关共加载 ${inbox.loaded} 个会话`
+      ? (inbox.partial
+        ? `已加载会话中有 ${inbox.unread} 个未读（部分来源未全量加载）`
+        : `跨网关有 ${inbox.unread} 个未读会话`)
+      : (inbox.partial
+        ? `已加载 ${inbox.loaded} 个会话（部分来源未全量加载）`
+        : `跨网关共加载 ${inbox.loaded} 个会话`)
 
   return jsx(Tip, {
     label,
@@ -2166,7 +2202,8 @@ function GatewayInboxChip() {
       type: 'button',
       children: [
         jsx(Codicon, { name: inbox.failed ? 'warning' : 'comment-discussion', size: '0.7rem' }),
-        jsx('span', { children: inbox.failed ? inbox.failed : (inbox.unread || inbox.loaded) })
+        jsx('span', { children: inbox.failed ? inbox.failed : (inbox.unread || inbox.loaded) }),
+        !inbox.failed && inbox.partial ? jsx('span', { 'aria-hidden': true, children: '+' }) : null
       ]
     })
   })
@@ -2262,6 +2299,7 @@ function GatewaySessionsPane() {
           hydrated: Boolean(hydratedSessions) || project.prefetchedComplete,
           loadError: load?.error || '',
           loadStatus: load?.status || 'idle',
+          loadUnsupported: Boolean(load?.unsupported),
           prefetchedSessions,
           searchSessions: prefetchedSessions,
           sessionCount: hydratedSessions ? hydratedSessions.length : project.sessionCount,
@@ -2443,9 +2481,10 @@ function GatewaySessionsPane() {
     void fetchGatewayProjectSessions(project)
       .then(sessions => {
         if (generation !== projectLoadGenerationRef.current) return
+        const unsupported = Boolean(gatewayProjectSessionsCache.get(gatewayProjectSessionsCacheKey(project))?.unsupported)
         setProjectLoads(current => {
           const next = new Map(current)
-          next.set(key, { status: 'ready', sessions })
+          next.set(key, { status: 'ready', sessions, unsupported })
           return next
         })
       })
