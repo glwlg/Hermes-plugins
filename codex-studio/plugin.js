@@ -384,10 +384,10 @@ function modernIconStylesheet() {
 @property --codex-gateway-arc-angle{syntax:"<angle>";initial-value:0deg;inherits:false}
 @keyframes codex-gateway-running-border{to{--codex-gateway-arc-angle:360deg}}
 @media (prefers-reduced-motion: reduce){.codex-gateway-session-row:has([class~="bg-(--ui-accent)"])::before,.codex-gateway-session-row:has([class~="border-(--ui-accent)"])::before{animation:none;background:#94A3B8}}
-.codex-gateway-project-row{margin-top:2px;background:var(--ui-row-hover-background);border:1px solid var(--ui-stroke-tertiary,transparent);border-radius:8px;box-shadow:0 1px 2px rgba(15,23,42,0.04)}
-.codex-gateway-project-row:hover{background:var(--ui-row-hover-background);border-color:var(--ui-stroke-secondary,transparent)}
+.codex-gateway-project-row{margin-top:2px;background:#f5f1ea;border:1px solid #e9e2d6;border-radius:8px;box-shadow:0 1px 2px rgba(120,104,80,0.05)}
+.codex-gateway-project-row:hover{background:#f1ece3;border-color:#ded4c2}
 .codex-gateway-project-row .codex-project-label{font-weight:600}
-.codex-gateway-session-row{margin-left:1.5rem;border-left:1px solid var(--ui-stroke-tertiary,transparent);border-radius:0 6px 6px 0}`
+.codex-gateway-session-row{margin-left:1.5rem;border-left:1px solid #ece5d8;border-radius:0 6px 6px 0}`
 }
 
 function syncModernIconStyles(active) {
