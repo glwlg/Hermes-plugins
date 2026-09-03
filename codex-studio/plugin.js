@@ -1760,6 +1760,50 @@ function patchSessionRows(rows, session, body, method, result) {
     .sort(compareSessions)
 }
 
+function patchProjectTreeSessions(tree, session, body, method, result) {
+  if (!tree || typeof tree !== 'object' || !Array.isArray(tree.projects)) {
+    return tree
+  }
+  const isDelete = method === 'DELETE'
+  const archived = body && Object.prototype.hasOwnProperty.call(body, 'archived')
+    ? sessionBooleanValue(body.archived)
+    : result && Object.prototype.hasOwnProperty.call(result, 'archived')
+      ? sessionBooleanValue(result.archived)
+      : undefined
+  const removed = isDelete || archived === true
+  const title = body && Object.prototype.hasOwnProperty.call(body, 'title')
+    ? String(body.title || '').trim()
+    : result && Object.prototype.hasOwnProperty.call(result, 'title')
+      ? String(result.title || '').trim()
+      : undefined
+
+  return {
+    ...tree,
+    projects: tree.projects.map(node => {
+      if (!node || typeof node !== 'object') {
+        return node
+      }
+      const preview = Array.isArray(node.previewSessions) ? node.previewSessions : null
+      if (!preview || !preview.some(row => row && row.id === session.id)) {
+        return node
+      }
+      const nextPreview = removed
+        ? preview.filter(row => row.id !== session.id)
+        : preview.map(row => row.id === session.id
+          ? { ...row, ...(title === undefined ? {} : { title }) }
+          : row)
+      const dropped = removed && nextPreview.length < preview.length
+      return {
+        ...node,
+        previewSessions: nextPreview,
+        ...(dropped && Number.isFinite(Number(node.sessionCount))
+          ? { sessionCount: Math.max(nextPreview.length, Number(node.sessionCount) - 1) }
+          : {})
+      }
+    })
+  }
+}
+
 function patchSessionInGroups(groups, project, session, body, method, result) {
   if (!Array.isArray(groups)) {
     return groups
@@ -1779,6 +1823,10 @@ function patchSessionInGroups(groups, project, session, body, method, result) {
     const removed = nextSessions.length < group.sessions.length
     return {
       ...group,
+      // The flat rows and the embedded tree preview are two copies of the same
+      // sessions; patch both or the deleted row is resurrected from the tree
+      // when projectGroupsForGatewayGroup rebuilds the project rows.
+      projectTree: patchProjectTreeSessions(group.projectTree, session, body, method, result),
       sessions: nextSessions,
       total: removed ? Math.max(nextSessions.length, (Number(group.total) || group.sessions.length) - 1) : group.total
     }
@@ -2643,6 +2691,10 @@ function GatewaySessionsPane() {
       }
     })
     clearGatewayProjectSessionsCache(project)
+    // Deletions must also invalidate the project tree cache: the refetch below
+    // rebuilds project rows from projects.tree, and a stale cached tree would
+    // resurrect the deleted preview row.
+    clearGatewayProjectTreeCache()
     setProjectLoads(current => {
       const load = current.get(project.key)
       if (!load?.sessions) {
