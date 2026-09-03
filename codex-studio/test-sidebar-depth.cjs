@@ -62,8 +62,11 @@ assert.match(source, /\.codex-gateway-project-row\{[^}]*box-shadow/, 'project he
 assert.match(source, /\.codex-gateway-project-row\{[^}]*border:1px solid/, 'project header has a hairline border')
 assert.match(source, /\.codex-gateway-project-row \{?[^}]*font-weight:600|codex-project-label\{font-weight:600/, 'project label is bolder than sessions')
 
-// Session rows are visually nested: indented with a guide rail on the left.
+// Session rows are visually nested: indented with a guide rail on the left,
+// drawn as an inset shadow so the row keeps its full rounded corners (an
+// earlier border-left + squared left radius clipped the selected bubble).
 assert.match(source, /\.codex-gateway-session-row\{[^}]*margin-left:1\.5rem/, 'session rows stay indented under the project')
-assert.match(source, /\.codex-gateway-session-row\{[^}]*border-left:1px solid/, 'session rows get a left guide rail')
+assert.match(source, /\.codex-gateway-session-row\{[^}]*box-shadow:inset 1px 0 0/, 'session rows get a left guide rail via inset shadow')
+assert.doesNotMatch(source, /\.codex-gateway-session-row\{[^}]*border-radius:0/, 'session rows keep their left rounded corners')
 
 console.log('codex-studio sidebar depth contract passed')

@@ -50,15 +50,15 @@ for (const token of icyChrome) {
 }
 
 const paperChrome = [
-  "sidebarBackground: '#f5f5f7'",
+  "sidebarBackground: '#f8f8fa'",
   "'--dt-sidebar-bg': '#f5f5f7'",
-  "'--ui-bg-sidebar': '#f5f5f7'",
-  "'--ui-sidebar-surface-background': '#f5f5f7'",
+  "'--ui-bg-sidebar': '#f8f8fa'",
+  "'--ui-sidebar-surface-background': '#f8f8fa'",
   "muted: '#f5f5f7'",
   "secondary: '#f5f5f7'",
   "accent: '#ebebed'",
   "'--ui-bg-chrome': '#f5f5f7'",
-  "'--ui-surface-background': '#f5f5f7'",
+  "'--ui-surface-background': '#f8f8fa'",
   "'--ui-inline-code-background': '#ececee'",
   "'--ui-control-hover-background': '#ececee'",
   "'--ui-row-hover-background': '#ececee'",

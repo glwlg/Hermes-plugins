@@ -215,7 +215,7 @@ const CODEX_THEME = {
     composerRing: '#20262a',
     destructive: '#b64b4b',
     destructiveForeground: '#ffffff',
-    sidebarBackground: '#f5f5f7',
+    sidebarBackground: '#f8f8fa',
     sidebarBorder: '#d4d4d8',
     userBubble: '#f3f4f5',
     userBubbleBorder: '#d4d4d8'
@@ -252,15 +252,15 @@ const LIGHT_ROOT_TOKENS = {
   '--ui-bg-editor': '#ffffff',
   '--ui-bg-elevated': '#ffffff',
   '--ui-bg-input': '#ffffff',
-  '--ui-bg-sidebar': '#f5f5f7',
+  '--ui-bg-sidebar': '#f8f8fa',
   '--ui-chat-bubble-background': '#ffffff',
   '--ui-chat-bubble-opaque-background': '#ffffff',
   '--ui-chat-surface-background': '#ffffff',
   '--ui-editor-surface-background': '#ffffff',
   '--ui-inline-code-background': '#ececee',
   '--ui-inline-code-foreground': '#0d1c2f',
-  '--ui-sidebar-surface-background': '#f5f5f7',
-  '--ui-surface-background': '#f5f5f7',
+  '--ui-sidebar-surface-background': '#f8f8fa',
+  '--ui-surface-background': '#f8f8fa',
   '--ui-widget-surface-background': '#ffffff',
   '--ui-stroke-primary': '#c4c4c8',
   '--ui-stroke-secondary': '#d0d0d4',
@@ -384,10 +384,10 @@ function modernIconStylesheet() {
 @property --codex-gateway-arc-angle{syntax:"<angle>";initial-value:0deg;inherits:false}
 @keyframes codex-gateway-running-border{to{--codex-gateway-arc-angle:360deg}}
 @media (prefers-reduced-motion: reduce){.codex-gateway-session-row:has([class~="bg-(--ui-accent)"])::before,.codex-gateway-session-row:has([class~="border-(--ui-accent)"])::before{animation:none;background:#94A3B8}}
-.codex-gateway-project-row{margin-top:2px;background:#f5f1ea;border:1px solid #e9e2d6;border-radius:8px;box-shadow:0 1px 2px rgba(120,104,80,0.05)}
-.codex-gateway-project-row:hover{background:#f1ece3;border-color:#ded4c2}
+.codex-gateway-project-row{margin-top:2px;background:#ffffff;border:1px solid #e9e2d6;border-radius:8px;box-shadow:0 1px 2px rgba(120,104,80,0.05)}
+.codex-gateway-project-row:hover{background:#fbfaf7;border-color:#ded4c2}
 .codex-gateway-project-row .codex-project-label{font-weight:600}
-.codex-gateway-session-row{margin-left:1.5rem;border-left:1px solid #ece5d8;border-radius:0 6px 6px 0}`
+.codex-gateway-session-row{margin-left:1.5rem;box-shadow:inset 1px 0 0 #ece5d8}`
 }
 
 function syncModernIconStyles(active) {
