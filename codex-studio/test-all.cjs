@@ -11,6 +11,7 @@ const checks = [
   ['pinned section', [path.join(root, 'test-pinned-section.cjs')]],
   ['project pin + info', [path.join(root, 'test-project-pin.cjs')]],
   ['project appearance', [path.join(root, 'test-project-appearance.cjs')]],
+  ['sidebar depth', [path.join(root, 'test-sidebar-depth.cjs')]],
   ['project recency and rows', [path.join(root, 'test-project-recency-preview.cjs')]],
   ['sidebar polish', [path.join(root, 'test-sidebar-polish.cjs')]],
   ['inbox surfaces', [path.join(root, 'test-inbox-surfaces.cjs')]],

@@ -383,7 +383,11 @@ function modernIconStylesheet() {
 .codex-gateway-session-row:has([class~="bg-(--ui-accent)"])::before,.codex-gateway-session-row:has([class~="border-(--ui-accent)"])::before{content:"";pointer-events:none;position:absolute;z-index:-1;inset:0;border-radius:8px;padding:1px;background:conic-gradient(from var(--codex-gateway-arc-angle,0deg),transparent 0deg,transparent 258deg,#1f2937 286deg,#64748b 326deg,transparent 360deg);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;animation:codex-gateway-running-border 2s linear infinite}
 @property --codex-gateway-arc-angle{syntax:"<angle>";initial-value:0deg;inherits:false}
 @keyframes codex-gateway-running-border{to{--codex-gateway-arc-angle:360deg}}
-@media (prefers-reduced-motion: reduce){.codex-gateway-session-row:has([class~="bg-(--ui-accent)"])::before,.codex-gateway-session-row:has([class~="border-(--ui-accent)"])::before{animation:none;background:#94A3B8}}`
+@media (prefers-reduced-motion: reduce){.codex-gateway-session-row:has([class~="bg-(--ui-accent)"])::before,.codex-gateway-session-row:has([class~="border-(--ui-accent)"])::before{animation:none;background:#94A3B8}}
+.codex-gateway-project-row{margin-top:2px;background:var(--ui-row-hover-background);border:1px solid var(--ui-stroke-tertiary,transparent);border-radius:8px;box-shadow:0 1px 2px rgba(15,23,42,0.04)}
+.codex-gateway-project-row:hover{background:var(--ui-row-hover-background);border-color:var(--ui-stroke-secondary,transparent)}
+.codex-gateway-project-row .codex-project-label{font-weight:600}
+.codex-gateway-session-row{margin-left:1.5rem;border-left:1px solid var(--ui-stroke-tertiary,transparent);border-radius:0 6px 6px 0}`
 }
 
 function syncModernIconStyles(active) {
@@ -611,13 +615,27 @@ const PROJECT_APPEARANCE_COLORS = {
   red: '#e11d48',
   orange: '#ea580c',
   amber: '#d97706',
+  yellow: '#ca8a04',
+  lime: '#65a30d',
   green: '#16a34a',
+  emerald: '#059669',
   teal: '#0d9488',
+  cyan: '#0891b2',
+  sky: '#0284c7',
   blue: '#2563eb',
+  indigo: '#4f46e5',
   violet: '#7c3aed',
-  pink: '#db2777'
+  purple: '#9333ea',
+  fuchsia: '#c026d3',
+  pink: '#db2777',
+  rose: '#f43f5e',
+  slate: '#64748b'
 }
-const PROJECT_APPEARANCE_ICONS = ['folder', 'repo', 'rocket', 'tools', 'database', 'cloud', 'code', 'package']
+const PROJECT_APPEARANCE_ICONS = [
+  'folder', 'repo', 'rocket', 'tools', 'database', 'cloud', 'code', 'package',
+  'book', 'bug', 'flame', 'zap', 'star', 'heart', 'globe', 'server',
+  'terminal', 'beaker', 'lightbulb', 'shield', 'target', 'gear', 'gift', 'coffee'
+]
 
 function projectAppearanceFor(appearance, projectKey) {
   if (!appearance || typeof appearance !== 'object') {
@@ -2047,7 +2065,8 @@ function gatewayProjectHeaderRow(project, collapsed, toggle, newChat, pinnedProj
   const customColor = projectIconColor(appearance, projectKey)
   const iconStyle = customColor ? { color: customColor } : undefined
   return jsxs('div', {
-    className: 'group flex h-8 w-full items-center gap-1 rounded px-1.5 hover:bg-(--ui-row-hover-background)',
+    className: 'codex-gateway-project-row group flex h-8 w-full items-center gap-1 rounded px-1.5 hover:bg-(--ui-row-hover-background)',
+    'data-row-kind': 'project',
     children: [
       jsxs('button', {
         className: 'flex min-w-0 flex-1 items-center gap-1.5 text-left',
@@ -2076,7 +2095,7 @@ function gatewayProjectHeaderRow(project, collapsed, toggle, newChat, pinnedProj
                   title: project.hasExplicitMetadata ? '项目' : '自动识别的项目',
                   children: jsx(Codicon, { name: customIcon, size: '0.76rem' })
                 }, 'folder'),
-          jsx('span', { className: 'min-w-0 flex-1 truncate text-[0.7rem] font-medium text-foreground/80', children: projectLabel }, 'label'),
+          jsx('span', { className: 'codex-project-label min-w-0 flex-1 truncate text-[0.7rem] font-medium text-foreground/80', children: projectLabel }, 'label'),
           sourceBadge && jsx('span', { className: 'max-w-28 shrink-0 truncate px-1 text-[0.58rem] text-(--ui-text-quaternary)', title: sourceBadge, children: sourceBadge }, 'source'),
           jsx('span', {
             className: 'text-[0.6rem] tabular-nums text-(--ui-text-quaternary)',
