@@ -88,8 +88,7 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'codex-studio'
 const THEME_NAME = 'hermes-cold-white'
-const LIQUID_GLASS_THEME_NAME = 'hermes-liquid-glass'
-const THEME_REVISION = 18
+const THEME_REVISION = 17
 const MESSAGE_COLUMN_WIDTH = '46rem'
 const USER_MESSAGE_MAX_WIDTH = '70%'
 const COMPOSER_RADIUS = '1.25rem'
@@ -231,50 +230,6 @@ const CODEX_THEME = {
 // colors for the host's dark preference prevents Desktop from synthesizing a
 // different variant while renderedModeFor keeps the actual window light.
 CODEX_THEME.darkColors = CODEX_THEME.colors
-
-// Liquid Glass: an iOS/macOS frosted-glass variant of the same light workbench.
-// The authored palette stays solid (Hermes theme colors are opaque); the glass
-// material — translucency, backdrop blur, inner highlights, ambient shadows —
-// arrives through the scoped liquidGlassStylesheet() rules below, gated on
-// [data-hermes-theme="hermes-liquid-glass"].
-const LIQUID_GLASS_THEME = {
-  name: LIQUID_GLASS_THEME_NAME,
-  label: 'Hermes 液态玻璃',
-  description: '浅色冷调液态玻璃工作台：半透明白面板、背景模糊、细亮边框与柔和环境阴影。',
-  colors: {
-    background: '#f4f6fb',
-    foreground: '#16233b',
-    card: '#ffffff',
-    cardForeground: '#16233b',
-    muted: '#eef1f7',
-    mutedForeground: '#5b6b82',
-    popover: '#ffffff',
-    popoverForeground: '#16233b',
-    primary: '#2f6bff',
-    primaryForeground: '#ffffff',
-    secondary: '#eef1f7',
-    secondaryForeground: '#33415e',
-    accent: '#e7ecf5',
-    accentForeground: '#16233b',
-    border: '#dbe1ec',
-    input: '#dbe1ec',
-    ring: '#2f6bff',
-    midground: '#16233b',
-    midgroundForeground: '#ffffff',
-    composerRing: '#2f6bff',
-    destructive: '#d4526e',
-    destructiveForeground: '#ffffff',
-    sidebarBackground: '#eef1f7',
-    sidebarBorder: '#dbe1ec',
-    userBubble: '#e8edf6',
-    userBubbleBorder: '#d4dce9'
-  },
-  typography: {
-    fontSans: '"Hanken Grotesk", "Segoe UI", system-ui, sans-serif',
-    fontMono: '"JetBrains Mono", "Cascadia Code", Consolas, monospace'
-  }
-}
-LIQUID_GLASS_THEME.darkColors = LIQUID_GLASS_THEME.colors
 
 // Public semantic tokens already consumed by Hermes Desktop. The theme
 // contribution supplies the authored palette; these values remove normal
@@ -463,30 +418,6 @@ function syncModernIconStyles(active) {
 
 function codeCardContrastStylesheet() {
   return `[data-hermes-theme="${THEME_NAME}"] [data-slot="code-card"]{position:relative;background-color:#151a21!important;color:#edf3fb;color-scheme:dark;border:1px solid #303946;--ui-bg-editor:#151a21;--foreground:#edf3fb;--muted-foreground:#aebbc9;--ui-fg-primary:#edf3fb;--ui-fg-secondary:#cbd5e1;--ui-fg-tertiary:#aebbc9;--ui-stroke-primary:#303946;--ui-stroke-secondary:#29323d}[data-hermes-theme="${THEME_NAME}"] [data-slot="code-card"] .aui-shiki :where(pre,code){color:#edf3fb!important;-webkit-text-fill-color:#edf3fb!important}[data-hermes-theme="${THEME_NAME}"] [data-slot="code-card"] .aui-shiki .shiki span{color:var(--shiki-dark,#edf3fb)!important;-webkit-text-fill-color:var(--shiki-dark,#edf3fb)!important}[data-hermes-theme="${THEME_NAME}"] [data-slot="code-card"] :where(button,[data-slot="code-card-icon"]){color:#aebbc9;opacity:.55}[data-hermes-theme="${THEME_NAME}"] [data-slot="code-card"] :where(button,[data-slot="code-card-icon"]):is(:hover,:focus-visible){opacity:1}[data-hermes-theme="${THEME_NAME}"] [data-slot="code-card"]::after{content:"";pointer-events:none;position:absolute;right:0;top:0;bottom:0;width:1rem;background:linear-gradient(to right,transparent,#151a21);opacity:.72}`
-}
-
-const LIQUID_GLASS_STYLE_ID = `${ID}-liquid-glass-style`
-
-function liquidGlassStylesheet() {
-  const s = `[data-hermes-theme="${LIQUID_GLASS_THEME_NAME}"]`
-  return `${s} [data-slot='sidebar'],${s} [data-slot='aui_thread-viewport'],${s} [data-chat-surface]{background:linear-gradient(160deg,#eef1f8 0%,#f4f6fb 40%,#eceff7 100%)}${s} [data-slot='composer-surface'],${s} [data-slot='code-card'],${s} .composer-human-message{backdrop-filter:blur(24px) saturate(160%);-webkit-backdrop-filter:blur(24px) saturate(160%);background:rgba(255, 255, 255, 0.55)!important;border:1px solid rgba(255, 255, 255, 0.6);box-shadow:0 8px 32px rgba(31, 38, 135, 0.08),inset 0 1px 0 rgba(255, 255, 255, 0.7)}${s} [data-slot='composer-surface']{border-radius:1.5rem}${s} .composer-human-message{border-radius:1.25rem}${s} [data-slot='code-card']{border-radius:1rem;color-scheme:dark;background:rgba(21, 26, 33, 0.92)!important;border-color:rgba(255,255,255,0.12)}${s} button[data-slot='send-button'],${s} [data-slot='composer-send']{border-radius:9999px;box-shadow:0 4px 16px rgba(47, 107, 255, 0.35)}`
-}
-
-function syncLiquidGlassStyles() {
-  if (typeof document === 'undefined') {
-    return
-  }
-  const existing = document.getElementById(LIQUID_GLASS_STYLE_ID)
-  const style = existing || document.createElement('style')
-  style.id = LIQUID_GLASS_STYLE_ID
-  style.dataset.codexLiquidGlass = 'true'
-  const stylesheet = liquidGlassStylesheet()
-  if (style.textContent !== stylesheet) {
-    style.textContent = stylesheet
-  }
-  if (!existing) {
-    document.head.appendChild(style)
-  }
 }
 
 const DYNAMIC_SURFACE_SELECTOR = [
@@ -3315,16 +3246,6 @@ export default {
       area: THEMES_AREA,
       data: CODEX_THEME
     })
-
-    ctx.register({
-      id: 'theme-liquid-glass',
-      area: THEMES_AREA,
-      data: LIQUID_GLASS_THEME
-    })
-
-    // Self-scoped by [data-hermes-theme="hermes-liquid-glass"], so it stays
-    // inert until that theme is selected; no per-theme JS gating needed.
-    syncLiquidGlassStyles()
 
     // This is a real contributed pane, not DOM injected into Hermes's React
     // Sessions tree. It uses the same left-side zone as the native Sessions
