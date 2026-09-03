@@ -36,7 +36,9 @@ assert.doesNotMatch(source, /function gatewayProjectMoreRow\(/)
 assert.doesNotMatch(source, /加载更多（已加载/, 'global source pagination must not compete with per-project expand')
 assert.doesNotMatch(source, /\$gatewaySessionLimit\.set\(nextSessionLimit\)/, 'the pane must not grow the shared session window from a footer button')
 assert.match(source, /remaining > 0/, 'expand is shown only when the authoritative project count exceeds visible rows')
-assert.match(source, /type: 'pin-divider'/, 'pinned and unpinned sessions must be separated by a thin divider')
+assert.match(source, /type: 'pinned-header'/, 'pinned sessions break out into a dedicated pinned section')
+assert.match(source, /type: 'pinned-session'/, 'pinned sessions render in the pinned section')
+assert.doesNotMatch(source, /type: 'pin-divider'/, 'the old in-project pin divider is gone once pinned sessions break out')
 assert.match(source, /data-session-status/, 'status marks belong in the trailing action slot, not the title lead')
 assert.match(source, /data-session-menu/, 'the kebab must occupy the same trailing slot as the status mark')
 assert.match(source, /\[data-session-status\]:not\(:has\(\[role="status"\]\)\)\{display:none!important\}/, 'idle SessionStatusDot marks must not occupy the kebab slot')
@@ -53,12 +55,14 @@ const names = [
   'projectRemoteLabel',
   'projectLatestActivity',
   'compareProjects',
+  'gatewayPinnedSessionEntries',
   'gatewayRenderRows'
 ]
 const context = {
   HOME_PROJECT_KEY: '__no_project__',
   HOME_PROJECT_LABEL: '主页',
-  PROJECT_SESSION_PREVIEW_LIMIT: 5
+  PROJECT_SESSION_PREVIEW_LIMIT: 5,
+  GATEWAY_PINNED_SECTION_KEY: '__pinned__'
 }
 vm.createContext(context)
 vm.runInContext(
@@ -216,14 +220,14 @@ const mixedRows = context.api.gatewayRenderRows(
 assert.deepEqual(
   JSON.parse(JSON.stringify(mixedRows.map(row => [row.type, row.session?.id || '']))),
   [
+    ['pinned-header', ''],
+    ['pinned-session', 'p2'],
+    ['pinned-session', 'p1'],
     ['project', ''],
-    ['session', 'p2'],
-    ['session', 'p1'],
-    ['pin-divider', ''],
     ['session', 'u1'],
     ['session', 'u2']
   ],
-  'pinned sessions stay first; a thin divider sits before the first unpinned row'
+  'pinned sessions break out into a top section; unpinned stay under the project'
 )
 
 const stickyNames = [
@@ -306,11 +310,11 @@ vm.runInContext(
 const variableRows = [
   { type: 'project' },
   { type: 'session' },
-  { type: 'pin-divider' },
+  { type: 'pinned-header' },
   { type: 'more' },
   { type: 'session' }
 ]
-assert.deepEqual(variableRows.map(variableContext.api.gatewayRowHeight), [32, 32, 9, 28, 32])
+assert.deepEqual(variableRows.map(variableContext.api.gatewayRowHeight), [32, 32, 28, 28, 32])
 assert.deepEqual(
   JSON.parse(JSON.stringify(variableContext.api.gatewayVirtualWindow(variableRows, 64, 30))),
   { bottom: 32, end: 4, start: 2, top: 64 }

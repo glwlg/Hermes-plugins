@@ -129,7 +129,9 @@ const RECENT_SESSION_WINDOW_MS = 24 * 60 * 60_000
 const DEFAULT_GATEWAY_SESSION_PREFERENCES = {
   collapsedKeys: [],
   hideScheduled: HIDE_SCHEDULED_SESSIONS_DEFAULT,
+  pinnedProjectKeys: [],
   profileScope: PROFILE_SCOPE_DEFAULT,
+  projectAppearance: {},
   search: ''
 }
 
@@ -143,12 +145,33 @@ const $gatewaySessionPrefs = atom(DEFAULT_GATEWAY_SESSION_PREFERENCES)
 const $gatewayProjectDataRevision = atom(0)
 const sessionDataRevision = { current: 0 }
 
+function normalizeProjectAppearance(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  const result = {}
+  for (const [key, entry] of Object.entries(source)) {
+    const id = String(key || '').trim()
+    if (!id || !entry || typeof entry !== 'object' || Array.isArray(entry)) continue
+    const color = typeof entry.color === 'string' && entry.color.trim() ? entry.color.trim() : ''
+    const icon = typeof entry.icon === 'string' && entry.icon.trim() ? entry.icon.trim() : ''
+    if (!color && !icon) continue
+    result[id] = {
+      ...(color ? { color } : {}),
+      ...(icon ? { icon } : {})
+    }
+  }
+  return result
+}
+
 function normalizeGatewaySessionPreferences(value) {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : DEFAULT_GATEWAY_SESSION_PREFERENCES
   return {
     collapsedKeys: Array.isArray(source.collapsedKeys) ? source.collapsedKeys : [],
     hideScheduled: typeof source.hideScheduled === 'boolean' ? source.hideScheduled : HIDE_SCHEDULED_SESSIONS_DEFAULT,
+    pinnedProjectKeys: Array.isArray(source.pinnedProjectKeys)
+      ? source.pinnedProjectKeys.filter(key => typeof key === 'string').map(key => key.trim()).filter(Boolean)
+      : [],
     profileScope: source.profileScope === PROFILE_SCOPE_ALL ? PROFILE_SCOPE_ALL : PROFILE_SCOPE_DEFAULT,
+    projectAppearance: normalizeProjectAppearance(source.projectAppearance),
     search: typeof source.search === 'string' ? source.search : ''
   }
 }
@@ -523,14 +546,6 @@ function sessionActive(session) {
   return sessionBooleanValue(session?.is_active)
 }
 
-function gatewayPinDividerRow(project) {
-  return jsx('div', {
-    'aria-hidden': true,
-    className: 'mx-2 my-1 h-px bg-(--ui-stroke-tertiary)',
-    style: { marginLeft: '1.5rem', width: 'calc(100% - 2.25rem)' }
-  }, `pin-divider:${project.key}`)
-}
-
 function eventSessionId(event) {
   const payload = event?.payload && typeof event.payload === 'object' ? event.payload : null
   return String(event?.session_id || payload?.session_id || payload?.stored_session_id || '').trim()
@@ -590,6 +605,82 @@ function compareProjects(a, b) {
   }
   const profileOrder = String(a?.profile || '').localeCompare(String(b?.profile || ''), undefined, { sensitivity: 'base' })
   return profileOrder || String(a?.key || '').localeCompare(String(b?.key || ''))
+}
+
+const PROJECT_APPEARANCE_COLORS = {
+  red: '#e11d48',
+  orange: '#ea580c',
+  amber: '#d97706',
+  green: '#16a34a',
+  teal: '#0d9488',
+  blue: '#2563eb',
+  violet: '#7c3aed',
+  pink: '#db2777'
+}
+const PROJECT_APPEARANCE_ICONS = ['folder', 'repo', 'rocket', 'tools', 'database', 'cloud', 'code', 'package']
+
+function projectAppearanceFor(appearance, projectKey) {
+  if (!appearance || typeof appearance !== 'object') {
+    return null
+  }
+  const entry = appearance[String(projectKey || '').trim()]
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return null
+  }
+  const color = typeof entry.color === 'string' && entry.color.trim() ? entry.color.trim() : ''
+  const icon = typeof entry.icon === 'string' && entry.icon.trim() ? entry.icon.trim() : ''
+  if (!color && !icon) {
+    return null
+  }
+  return {
+    ...(color ? { color } : {}),
+    ...(icon ? { icon } : {})
+  }
+}
+
+function projectIconName(appearance, projectKey) {
+  const icon = projectAppearanceFor(appearance, projectKey)?.icon || ''
+  return PROJECT_APPEARANCE_ICONS.includes(icon) ? icon : 'folder'
+}
+
+function projectIconColor(appearance, projectKey) {
+  const color = projectAppearanceFor(appearance, projectKey)?.color || ''
+  return Object.prototype.hasOwnProperty.call(PROJECT_APPEARANCE_COLORS, color)
+    ? PROJECT_APPEARANCE_COLORS[color]
+    : null
+}
+
+function orderProjectsWithPins(projects, pinnedKeys) {
+  const list = Array.isArray(projects) ? [...projects] : []
+  const pinned = typeof pinnedKeys?.has === 'function'
+    ? pinnedKeys
+    : new Set(Array.isArray(pinnedKeys) ? pinnedKeys : [])
+  if (pinned.size === 0) {
+    return list.sort(compareProjects)
+  }
+  const pinnedProjects = list.filter(project => pinned.has(project?.key)).sort(compareProjects)
+  const rest = list.filter(project => !pinned.has(project?.key)).sort(compareProjects)
+  return [...pinnedProjects, ...rest]
+}
+
+function projectInfoHint(project) {
+  const lines = [projectDisplayLabel(project)]
+  const count = Math.max(
+    Array.isArray(project?.sessions) ? project.sessions.length : 0,
+    Number(project?.sessionCount) || 0
+  )
+  lines.push(`${count} 个会话`)
+  const source = String(project?.sourceLabel || projectRemoteLabel(project) || '').trim()
+  lines.push(source ? `网关：${source}` : '网关：本机')
+  const path = projectWorkspacePath(project)
+  if (path) {
+    lines.push(`路径：${path}`)
+  }
+  const profile = String(project?.profile || '').trim()
+  if (profile && profile.toLowerCase() !== PROFILE_SCOPE_DEFAULT) {
+    lines.push(`配置：${profile}`)
+  }
+  return lines.filter(Boolean).join('\n')
 }
 
 function shouldResortProjectsForUserInput(input) {
@@ -1834,7 +1925,7 @@ function patchSessionInGroups(groups, project, session, body, method, result) {
 }
 
 function gatewayRowHeight(row) {
-  if (row?.type === 'pin-divider') return 9
+  if (row?.type === 'pinned-header') return 28
   if (row?.type === 'more' || row?.type === 'collapse' || row?.type === 'project-loading' || row?.type === 'project-error') return 28
   return 32
 }
@@ -1865,28 +1956,58 @@ function gatewayVirtualWindow(rows, scrollTop, viewportHeight) {
   return { bottom, end, start, top }
 }
 
+const GATEWAY_PINNED_SECTION_KEY = '__pinned__'
+
+function gatewayPinnedSessionEntries(projects) {
+  const entries = []
+  for (const project of Array.isArray(projects) ? projects : []) {
+    const sessions = Array.isArray(project?.sessions) ? project.sessions : []
+    for (const session of sessions) {
+      if (sessionPinned(session)) {
+        entries.push({ project, session })
+      }
+    }
+  }
+  entries.sort((a, b) => sessionActivityValue(b.session) - sessionActivityValue(a.session))
+  return entries
+}
+
 function gatewayRenderRows(projects, collapsed, revealed = new Set()) {
   const rows = []
+
+  // Pinned sessions break out of their project into a dedicated top section.
+  // They render only here — never duplicated under the owning project.
+  const pinnedEntries = gatewayPinnedSessionEntries(projects)
+  if (pinnedEntries.length > 0) {
+    rows.push({ key: `pinned-header:${GATEWAY_PINNED_SECTION_KEY}`, type: 'pinned-header', count: pinnedEntries.length })
+    if (!collapsed.has(GATEWAY_PINNED_SECTION_KEY)) {
+      for (const entry of pinnedEntries) {
+        rows.push({
+          key: `pinned-session:${entry.project.key}:${entry.session.id}`,
+          type: 'pinned-session',
+          project: entry.project,
+          session: entry.session
+        })
+      }
+    }
+  }
+
   for (const project of projects) {
     rows.push({ key: `project:${project.key}`, type: 'project', project })
     if (collapsed.has(project.key)) {
       continue
     }
 
-    const sessions = Array.isArray(project.sessions) ? project.sessions : []
-    const sessionCount = Math.max(sessions.length, Number(project.sessionCount) || 0)
+    const allSessions = Array.isArray(project.sessions) ? project.sessions : []
+    // Pinned sessions live in the pinned section only (跳出), so the project
+    // renders just its unpinned rows.
+    const sessions = allSessions.filter(session => !sessionPinned(session))
+    const hidden = allSessions.length - sessions.length
+    const sessionCount = Math.max(0, (Number(project.sessionCount) || sessions.length) - hidden)
     const canExpand = sessionCount > PROJECT_SESSION_PREVIEW_LIMIT
     const showAll = revealed.has(project.key) || !canExpand
     const visible = showAll ? sessions : sessions.slice(0, PROJECT_SESSION_PREVIEW_LIMIT)
-    let sawUnpinned = false
     for (const session of visible) {
-      if (!sawUnpinned && !sessionPinned(session) && visible.some(row => sessionPinned(row))) {
-        rows.push({ key: `pin-divider:${project.key}`, type: 'pin-divider', project })
-        sawUnpinned = true
-      }
-      if (!sessionPinned(session)) {
-        sawUnpinned = true
-      }
       rows.push({ key: `session:${project.key}:${session.id}`, type: 'session', project, session })
     }
     const remaining = Math.max(0, sessionCount - visible.length)
@@ -1914,12 +2035,17 @@ function gatewayRenderRows(projects, collapsed, revealed = new Set()) {
   return rows
 }
 
-function gatewayProjectHeaderRow(project, collapsed, toggle, newChat) {
+function gatewayProjectHeaderRow(project, collapsed, toggle, newChat, pinnedProjects, onTogglePin, appearance, onEditAppearance) {
   const projectKey = project.key
   const remoteLabel = projectRemoteLabel(project)
   const remote = project?.route?.mode === 'remote' || Boolean(remoteLabel)
   const sourceBadge = projectSourceBadge(project)
   const projectLabel = projectDisplayLabel(project)
+  const isPinned = typeof pinnedProjects?.has === 'function' ? pinnedProjects.has(projectKey) : false
+  const infoHint = projectInfoHint(project)
+  const customIcon = projectIconName(appearance, projectKey)
+  const customColor = projectIconColor(appearance, projectKey)
+  const iconStyle = customColor ? { color: customColor } : undefined
   return jsxs('div', {
     className: 'group flex h-8 w-full items-center gap-1 rounded px-1.5 hover:bg-(--ui-row-hover-background)',
     children: [
@@ -1928,6 +2054,7 @@ function gatewayProjectHeaderRow(project, collapsed, toggle, newChat) {
         'aria-expanded': !collapsed.has(projectKey),
         'aria-label': `${collapsed.has(projectKey) ? '展开' : '收起'} ${projectLabel}`,
         onClick: () => toggle(projectKey),
+        title: infoHint,
         type: 'button',
         children: [
           jsx(Codicon, { name: collapsed.has(projectKey) ? 'chevron-right' : 'chevron-down', size: '0.68rem' }, 'chevron'),
@@ -1936,16 +2063,18 @@ function gatewayProjectHeaderRow(project, collapsed, toggle, newChat) {
             : remote
               ? jsxs('span', {
                   className: 'relative flex size-4 shrink-0 items-center justify-center',
+                  style: iconStyle,
                   title: project.hasExplicitMetadata ? '远程项目' : '自动识别的远程项目',
                   children: [
-                    jsx(Codicon, { name: 'folder', size: '0.76rem' }, 'folder'),
+                    jsx(Codicon, { name: customIcon, size: '0.76rem' }, 'folder'),
                     jsx(Codicon, { name: 'globe', size: '0.5rem', className: 'absolute -bottom-0.5 -right-0.5 rounded-full bg-(--ui-sidebar-surface-background)' }, 'globe')
                   ]
                 }, 'remote-folder')
               : jsx('span', {
                   className: 'flex size-4 shrink-0 items-center justify-center',
+                  style: iconStyle,
                   title: project.hasExplicitMetadata ? '项目' : '自动识别的项目',
-                  children: jsx(Codicon, { name: 'folder', size: '0.76rem' })
+                  children: jsx(Codicon, { name: customIcon, size: '0.76rem' })
                 }, 'folder'),
           jsx('span', { className: 'min-w-0 flex-1 truncate text-[0.7rem] font-medium text-foreground/80', children: projectLabel }, 'label'),
           sourceBadge && jsx('span', { className: 'max-w-28 shrink-0 truncate px-1 text-[0.58rem] text-(--ui-text-quaternary)', title: sourceBadge, children: sourceBadge }, 'source'),
@@ -1956,6 +2085,25 @@ function gatewayProjectHeaderRow(project, collapsed, toggle, newChat) {
           }, 'count')
         ]
       }, 'toggle'),
+      jsx(Button, {
+        'aria-label': `自定义 ${projectLabel} 的图标和颜色`,
+        className: 'size-6 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100',
+        onClick: () => onEditAppearance?.(project),
+        size: 'icon-xs',
+        title: '自定义图标和颜色',
+        variant: 'ghost',
+        children: jsx(Codicon, { name: 'edit', size: '0.74rem' })
+      }, 'edit-appearance'),
+      jsx(Button, {
+        'aria-label': isPinned ? `取消置顶项目 ${projectLabel}` : `置顶项目 ${projectLabel}`,
+        'aria-pressed': isPinned,
+        className: `size-6 transition-opacity focus-visible:opacity-100 ${isPinned ? 'opacity-100 text-foreground' : 'opacity-0 group-hover:opacity-100'}`,
+        onClick: () => onTogglePin?.(projectKey),
+        size: 'icon-xs',
+        title: isPinned ? '取消置顶项目' : '置顶项目',
+        variant: 'ghost',
+        children: jsx(Codicon, { name: isPinned ? 'pinned' : 'pin', size: '0.78rem' })
+      }, 'pin-project'),
       jsx(Button, {
         'aria-label': `在 ${projectLabel} 中新建会话`,
         className: 'size-6 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100',
@@ -1969,12 +2117,156 @@ function gatewayProjectHeaderRow(project, collapsed, toggle, newChat) {
   }, projectKey)
 }
 
-function gatewaySessionRow(project, session, focusedStoredSessionId, focusedSessionOwner, opening, open, applySessionChange) {
+function ProjectAppearanceDialog({ open, onOpenChange, project, appearance, onSave }) {
+  const projectKey = project?.key || ''
+  const existing = projectAppearanceFor(appearance, projectKey) || {}
+  const [color, setColor] = useState(() => existing.color || '')
+  const [icon, setIcon] = useState(() => existing.icon || '')
+
+  useEffect(() => {
+    if (open) {
+      setColor(existing.color || '')
+      setIcon(existing.icon || '')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, projectKey])
+
+  if (!open || !project) {
+    return null
+  }
+  const label = projectDisplayLabel(project)
+  const previewColor = color && PROJECT_APPEARANCE_COLORS[color] ? PROJECT_APPEARANCE_COLORS[color] : undefined
+  const previewIcon = icon && PROJECT_APPEARANCE_ICONS.includes(icon) ? icon : 'folder'
+
+  const save = () => {
+    const entry = {}
+    if (color) entry.color = color
+    if (icon) entry.icon = icon
+    onSave?.(projectKey, entry)
+    onOpenChange(false)
+  }
+
+  return jsx(Dialog, {
+    open,
+    onOpenChange,
+    children: jsxs(DialogContent, {
+      className: 'max-w-sm',
+      children: [
+        jsx(DialogHeader, { children: jsx(DialogTitle, { children: `自定义「${label}」` }) }, 'header'),
+        jsxs('div', {
+          className: 'flex items-center gap-2 rounded border border-(--ui-stroke-tertiary) px-2 py-1.5',
+          children: [
+            jsx('span', {
+              className: 'flex size-5 items-center justify-center',
+              style: previewColor ? { color: previewColor } : undefined,
+              children: jsx(Codicon, { name: previewIcon, size: '0.9rem' })
+            }, 'preview-icon'),
+            jsx('span', { className: 'text-[0.72rem] text-foreground/80', children: label }, 'preview-label')
+          ]
+        }, 'preview'),
+        jsxs('div', {
+          className: 'space-y-1',
+          children: [
+            jsx('div', { className: 'text-[0.65rem] text-(--ui-text-quaternary)', children: '颜色' }, 'color-label'),
+            jsx('div', {
+              className: 'flex flex-wrap gap-1.5',
+              children: [
+                jsx('button', {
+                  'aria-label': '默认颜色',
+                  'aria-pressed': !color,
+                  className: `size-6 rounded-full border ${!color ? 'ring-1 ring-(--ui-accent)' : ''}`,
+                  onClick: () => setColor(''),
+                  style: { background: 'var(--ui-text-quaternary)' },
+                  title: '默认',
+                  type: 'button'
+                }, 'color-default'),
+                ...Object.entries(PROJECT_APPEARANCE_COLORS).map(([name, hex]) => jsx('button', {
+                  'aria-label': `颜色 ${name}`,
+                  'aria-pressed': color === name,
+                  className: `size-6 rounded-full border border-black/10 ${color === name ? 'ring-2 ring-(--ui-accent)' : ''}`,
+                  onClick: () => setColor(name),
+                  style: { background: hex },
+                  title: name,
+                  type: 'button'
+                }, `color-${name}`))
+              ]
+            }, 'color-row')
+          ]
+        }, 'color-section'),
+        jsxs('div', {
+          className: 'space-y-1',
+          children: [
+            jsx('div', { className: 'text-[0.65rem] text-(--ui-text-quaternary)', children: '图标' }, 'icon-label'),
+            jsx('div', {
+              className: 'flex flex-wrap gap-1.5',
+              children: PROJECT_APPEARANCE_ICONS.map(name => jsx('button', {
+                'aria-label': `图标 ${name}`,
+                'aria-pressed': (icon || 'folder') === name,
+                className: `flex size-7 items-center justify-center rounded border ${(icon || 'folder') === name ? 'border-(--ui-accent) bg-(--ui-row-active-background)' : 'border-(--ui-stroke-tertiary)'}`,
+                onClick: () => setIcon(name === 'folder' ? '' : name),
+                title: name,
+                type: 'button',
+                children: jsx(Codicon, { name, size: '0.85rem' })
+              }, `icon-${name}`))
+            }, 'icon-row')
+          ]
+        }, 'icon-section'),
+        jsxs(DialogFooter, {
+          children: [
+            jsx(Button, { onClick: () => { setColor(''); setIcon('') }, size: 'xs', variant: 'ghost', children: '重置' }, 'reset'),
+            jsx(Button, { onClick: () => onOpenChange(false), size: 'xs', variant: 'ghost', children: '取消' }, 'cancel'),
+            jsx(Button, { onClick: save, size: 'xs', children: '保存' }, 'save')
+          ]
+        }, 'footer')
+      ]
+    })
+  })
+}
+
+function gatewayPinnedSessionHint(project, session) {
+  const lines = [sessionRowTitle(session)]
+  const time = sessionRowTime(session)
+  const projectLabel = projectDisplayLabel(project)
+  if (projectLabel) {
+    lines.push(`项目：${projectLabel}`)
+  }
+  const gateway = String(project?.sourceLabel || projectRemoteLabel(project) || '').trim()
+  lines.push(`网关：${gateway || '本机'}`)
+  if (time) {
+    lines.push(`时间：${time}`)
+  }
+  if (session?.preview) {
+    lines.push(String(session.preview).trim())
+  }
+  return lines.filter(Boolean).join('\n')
+}
+
+function gatewayPinnedSectionHeader(collapsed, toggle, count) {
+  const isCollapsed = collapsed.has(GATEWAY_PINNED_SECTION_KEY)
+  return jsxs('button', {
+    'aria-expanded': !isCollapsed,
+    'aria-label': `${isCollapsed ? '展开' : '收起'}置顶会话`,
+    className: 'flex h-7 w-full items-center gap-1.5 rounded px-1.5 text-left hover:bg-(--ui-row-hover-background)',
+    onClick: () => toggle(GATEWAY_PINNED_SECTION_KEY),
+    type: 'button',
+    children: [
+      jsx(Codicon, { name: isCollapsed ? 'chevron-right' : 'chevron-down', size: '0.68rem' }, 'chevron'),
+      jsx(Codicon, { name: 'pin', size: '0.72rem', className: 'text-(--ui-text-quaternary)' }, 'pin'),
+      jsx('span', { className: 'text-[0.65rem] font-medium uppercase tracking-wide text-(--ui-text-quaternary)', children: '置顶' }, 'label'),
+      jsx('span', { className: 'text-[0.6rem] tabular-nums text-(--ui-text-quaternary)', children: count }, 'count')
+    ]
+  }, GATEWAY_PINNED_SECTION_KEY)
+}
+
+function gatewaySessionRow(project, session, focusedStoredSessionId, focusedSessionOwner, opening, open, applySessionChange, options = {}) {
   const sessionKey = `${project.key}::${session.id}`
   const title = sessionRowTitle(session)
   const active = focusedSessionMatches(session, project, focusedStoredSessionId, focusedSessionOwner)
   const openingNow = opening === sessionKey
+  const pinned = Boolean(options.pinned)
+  const indent = options.indent === false ? '0' : '1.5rem'
   const rowClassName = `codex-gateway-session-row group relative h-8 min-w-0 rounded-md text-left transition-colors hover:bg-(--ui-row-hover-background) ${active ? 'bg-(--ui-row-active-background) text-foreground' : ''} ${openingNow ? 'opacity-60' : ''}`
+  const hint = pinned ? gatewayPinnedSessionHint(project, session) : null
   const row = jsxs('div', {
     'aria-current': active ? 'page' : undefined,
     'aria-label': `会话 ${title}`,
@@ -1986,16 +2278,16 @@ function gatewaySessionRow(project, session, focusedStoredSessionId, focusedSess
       boxShadow: active ? 'inset 0 0 0 1px var(--ui-stroke-secondary)' : undefined,
       display: 'grid',
       gridTemplateColumns: 'minmax(0, 1fr) max-content max-content',
-      marginLeft: '1.5rem',
+      marginLeft: indent,
       minWidth: 0,
-      width: 'calc(100% - 1.5rem)'
+      width: `calc(100% - ${indent})`
     },
     children: [
       jsx(RowButton, {
         className: 'flex w-full min-w-0 items-center rounded-md bg-transparent px-2 py-1 text-left hover:bg-transparent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-(--ui-accent)',
         disabled: openingNow,
         onClick: () => void open(project, session),
-        title: session.preview ? `${title}\n${session.preview}` : title,
+        title: hint || (session.preview ? `${title}\n${session.preview}` : title),
         type: 'button',
         children: jsx('span', {
           className: `block min-w-0 flex-1 truncate ${active ? 'font-semibold text-foreground' : 'font-normal text-foreground/85'}`,
@@ -2288,6 +2580,26 @@ function GatewaySessionsPane() {
     })
   }
 
+  const pinnedProjects = useMemo(() => new Set(prefs.pinnedProjectKeys || []), [prefs.pinnedProjectKeys])
+  const toggleProjectPin = key => {
+    const next = new Set(pinnedProjects)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    persistPrefs({ pinnedProjectKeys: [...next].slice(-100) })
+  }
+
+  const projectAppearance = prefs.projectAppearance || {}
+  const [appearanceEditorProject, setAppearanceEditorProject] = useState(null)
+  const saveProjectAppearance = (key, entry) => {
+    const next = { ...projectAppearance }
+    if (entry && (entry.color || entry.icon)) {
+      next[key] = entry
+    } else {
+      delete next[key]
+    }
+    persistPrefs({ projectAppearance: next })
+  }
+
   useEffect(() => {
     const element = sessionsScrollRef.current
     if (!element || typeof ResizeObserver === 'undefined') {
@@ -2397,8 +2709,9 @@ function GatewaySessionsPane() {
     lastProjectSortEpochRef.current = projectSortEpoch
     projectOrderKeysRef.current = orderedAll.map(project => project.key)
     const visibleByKey = new Map(visibleProjects.map(project => [project.key, project]))
-    return orderedAll.map(project => visibleByKey.get(project.key)).filter(Boolean)
-  }, [projectSortEpoch, unfilteredProjects, visibleProjects])
+    const visible = orderedAll.map(project => visibleByKey.get(project.key)).filter(Boolean)
+    return orderProjectsWithPins(visible, pinnedProjects)
+  }, [pinnedProjects, projectSortEpoch, unfilteredProjects, visibleProjects])
 
   const unavailableSources = sourceGroups.filter(group => group.error)
 
@@ -2824,8 +3137,12 @@ function GatewaySessionsPane() {
             ref: sessionsScrollRef,
             children: [
               renderedRows.topSpacer > 0 && jsx('div', { 'aria-hidden': true, style: { height: renderedRows.topSpacer } }, 'virtual-top'),
-              ...renderedRows.rows.map(renderRow => renderRow.type === 'project'
-                ? gatewayProjectHeaderRow(renderRow.project, collapsed, toggle, newChat)
+              ...renderedRows.rows.map(renderRow => renderRow.type === 'pinned-header'
+                ? gatewayPinnedSectionHeader(collapsed, toggle, renderRow.count || 0)
+                : renderRow.type === 'pinned-session'
+                  ? gatewaySessionRow(renderRow.project, renderRow.session, focusedStoredSessionId, focusedSessionOwner, opening, open, applySessionChange, { indent: false, pinned: true })
+                  : renderRow.type === 'project'
+                ? gatewayProjectHeaderRow(renderRow.project, collapsed, toggle, newChat, pinnedProjects, toggleProjectPin, projectAppearance, setAppearanceEditorProject)
                 : renderRow.type === 'more'
                   ? gatewayProjectToggleRow(renderRow.project, renderRow.remaining, revealProjectSessions, 'more')
                   : renderRow.type === 'collapse'
@@ -2834,12 +3151,17 @@ function GatewaySessionsPane() {
                       ? gatewayProjectLoadRow(renderRow.project, retryProjectSessions, 'loading')
                       : renderRow.type === 'project-error'
                         ? gatewayProjectLoadRow(renderRow.project, retryProjectSessions, 'error')
-                        : renderRow.type === 'pin-divider'
-                          ? gatewayPinDividerRow(renderRow.project)
-                          : gatewaySessionRow(renderRow.project, renderRow.session, focusedStoredSessionId, focusedSessionOwner, opening, open, applySessionChange)),
+                        : gatewaySessionRow(renderRow.project, renderRow.session, focusedStoredSessionId, focusedSessionOwner, opening, open, applySessionChange)),
               renderedRows.bottomSpacer > 0 && jsx('div', { 'aria-hidden': true, style: { height: renderedRows.bottomSpacer } }, 'virtual-bottom')
             ]
-          }, 'session-list')
+          }, 'session-list'),
+      jsx(ProjectAppearanceDialog, {
+        appearance: projectAppearance,
+        onOpenChange: next => { if (!next) setAppearanceEditorProject(null) },
+        onSave: saveProjectAppearance,
+        open: Boolean(appearanceEditorProject),
+        project: appearanceEditorProject
+      }, 'appearance-dialog')
     ]
   })
 }
