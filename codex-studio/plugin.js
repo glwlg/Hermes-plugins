@@ -215,7 +215,7 @@ const CODEX_THEME = {
     composerRing: '#20262a',
     destructive: '#b64b4b',
     destructiveForeground: '#ffffff',
-    sidebarBackground: '#f8f8fa',
+    sidebarBackground: '#fbfbfe',
     sidebarBorder: '#d4d4d8',
     userBubble: '#f3f4f5',
     userBubbleBorder: '#d4d4d8'
@@ -252,15 +252,15 @@ const LIGHT_ROOT_TOKENS = {
   '--ui-bg-editor': '#ffffff',
   '--ui-bg-elevated': '#ffffff',
   '--ui-bg-input': '#ffffff',
-  '--ui-bg-sidebar': '#f8f8fa',
+  '--ui-bg-sidebar': '#fbfbfe',
   '--ui-chat-bubble-background': '#ffffff',
   '--ui-chat-bubble-opaque-background': '#ffffff',
   '--ui-chat-surface-background': '#ffffff',
   '--ui-editor-surface-background': '#ffffff',
   '--ui-inline-code-background': '#ececee',
   '--ui-inline-code-foreground': '#0d1c2f',
-  '--ui-sidebar-surface-background': '#f8f8fa',
-  '--ui-surface-background': '#f8f8fa',
+  '--ui-sidebar-surface-background': '#fbfbfe',
+  '--ui-surface-background': '#fbfbfe',
   '--ui-widget-surface-background': '#ffffff',
   '--ui-stroke-primary': '#c4c4c8',
   '--ui-stroke-secondary': '#d0d0d4',
@@ -380,14 +380,14 @@ function modernIconStylesheet() {
 .codex-gateway-session-row [data-session-menu]{opacity:0;pointer-events:none}
 .codex-gateway-session-row:is(:hover,:focus-within) [data-session-status]{visibility:hidden}
 .codex-gateway-session-row:is(:hover,:focus-within) [data-session-menu],.codex-gateway-session-row [data-session-menu]:has([data-state="open"]){opacity:1;pointer-events:auto}
-.codex-gateway-session-row:has([class~="bg-(--ui-accent)"])::before,.codex-gateway-session-row:has([class~="border-(--ui-accent)"])::before{content:"";pointer-events:none;position:absolute;z-index:-1;inset:0;border-radius:8px;padding:1px;background:conic-gradient(from var(--codex-gateway-arc-angle,0deg),transparent 0deg,transparent 258deg,#1f2937 286deg,#64748b 326deg,transparent 360deg);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;animation:codex-gateway-running-border 2s linear infinite}
+.codex-gateway-session-row:has([class~="bg-(--ui-accent)"])::before,.codex-gateway-session-row:has([class~="border-(--ui-accent)"])::before{content:"";pointer-events:none;position:absolute;z-index:-1;inset:0;border-radius:8px;padding:1px;background:conic-gradient(from var(--codex-gateway-arc-angle,0deg),transparent 0deg,transparent 258deg,var(--codex-project-color, #1f2937) 286deg,color-mix(in srgb, var(--codex-project-color, #64748b) 55%, transparent) 326deg,transparent 360deg);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;animation:codex-gateway-running-border 2s linear infinite}
 @property --codex-gateway-arc-angle{syntax:"<angle>";initial-value:0deg;inherits:false}
 @keyframes codex-gateway-running-border{to{--codex-gateway-arc-angle:360deg}}
 @media (prefers-reduced-motion: reduce){.codex-gateway-session-row:has([class~="bg-(--ui-accent)"])::before,.codex-gateway-session-row:has([class~="border-(--ui-accent)"])::before{animation:none;background:#94A3B8}}
-.codex-gateway-project-row{margin-top:2px;background:#ffffff;border:1px solid #e9e2d6;border-radius:8px;box-shadow:0 1px 2px rgba(120,104,80,0.05)}
+.codex-gateway-project-row{margin-top:4px;background:#ffffff;border:1px solid #e9e2d6;border-radius:8px;box-shadow:0 1px 2px rgba(120,104,80,0.05)}
 .codex-gateway-project-row:hover{background:#fbfaf7;border-color:#ded4c2}
 .codex-gateway-project-row .codex-project-label{font-weight:600}
-.codex-gateway-session-row{margin-left:1.5rem;box-shadow:inset 1px 0 0 #ece5d8}`
+.codex-gateway-session-row{margin-top:4px;margin-left:1.5rem;box-shadow:inset 1px 0 0 var(--codex-project-color, #ece5d8)}`
 }
 
 function syncModernIconStyles(active) {
@@ -673,11 +673,15 @@ function orderProjectsWithPins(projects, pinnedKeys) {
   const pinned = typeof pinnedKeys?.has === 'function'
     ? pinnedKeys
     : new Set(Array.isArray(pinnedKeys) ? pinnedKeys : [])
+  // `projects` already arrives in the stabilized (frozen) order. Re-sorting by
+  // live activity here would resurrect the jump the stabilizer just removed, so
+  // this only lifts pinned projects to the front while preserving the incoming
+  // relative order (a stable partition, not a re-sort).
   if (pinned.size === 0) {
-    return list.sort(compareProjects)
+    return list
   }
-  const pinnedProjects = list.filter(project => pinned.has(project?.key)).sort(compareProjects)
-  const rest = list.filter(project => !pinned.has(project?.key)).sort(compareProjects)
+  const pinnedProjects = list.filter(project => pinned.has(project?.key))
+  const rest = list.filter(project => !pinned.has(project?.key))
   return [...pinnedProjects, ...rest]
 }
 
@@ -706,6 +710,13 @@ function shouldResortProjectsForUserInput(input) {
   if (reason === 'refresh' || reason === 'new-chat') {
     return true
   }
+  // Only a send in the session the user is already looking at may reorder the
+  // rail: the focused session id must be unchanged while its busy flag rises.
+  // Switching to an already-busy session also flips busy false→true, but that
+  // is navigation, not a send — gating on the id keeps the list from jumping.
+  if (input.previousSessionId !== input.sessionId) {
+    return false
+  }
   return Boolean(input) && input.previousBusy === false && input.busy === true
 }
 
@@ -729,6 +740,33 @@ function stabilizeProjectOrder(projects, previousKeys, options) {
     byKey.delete(key)
   }
   const newcomers = [...byKey.values()].sort(compareProjects)
+  return [...ordered, ...newcomers]
+}
+
+// Same freeze as stabilizeProjectOrder but for the sessions inside one project:
+// keep the previous id order between resort epochs, only re-sorting by live
+// activity on the first paint or when the user actually sends. New sessions
+// append in activity order so a fresh chat still surfaces.
+function stabilizeSessionOrder(sessions, previousIds, options) {
+  const list = Array.isArray(sessions) ? [...sessions] : []
+  const previous = Array.isArray(previousIds) ? previousIds : []
+  const resort = Boolean(options && options.resort)
+  if (list.length === 0) {
+    return list
+  }
+  if (resort || previous.length === 0) {
+    return list.sort(compareSessions)
+  }
+
+  const byId = new Map(list.map(session => [session.id, session]))
+  const ordered = []
+  for (const id of previous) {
+    const session = byId.get(id)
+    if (!session) continue
+    ordered.push(session)
+    byId.delete(id)
+  }
+  const newcomers = [...byId.values()].sort(compareSessions)
   return [...ordered, ...newcomers]
 }
 
@@ -1945,7 +1983,9 @@ function patchSessionInGroups(groups, project, session, body, method, result) {
 function gatewayRowHeight(row) {
   if (row?.type === 'pinned-header') return 28
   if (row?.type === 'more' || row?.type === 'collapse' || row?.type === 'project-loading' || row?.type === 'project-error') return 28
-  return 32
+  // 32px content + 4px breathing gap between rows (see .codex-gateway-project-row /
+  // .codex-gateway-session-row margin-top), so virtual spacers stay aligned.
+  return 36
 }
 
 function gatewayVirtualWindow(rows, scrollTop, viewportHeight) {
@@ -2078,7 +2118,12 @@ function gatewayProjectHeaderRow(project, collapsed, toggle, newChat, pinnedProj
         children: [
           jsx(Codicon, { name: collapsed.has(projectKey) ? 'chevron-right' : 'chevron-down', size: '0.68rem' }, 'chevron'),
           isHomeProject(project)
-            ? jsx(Codicon, { name: 'home', size: '0.76rem' }, 'home')
+            ? jsx('span', {
+                className: 'flex size-4 shrink-0 items-center justify-center',
+                style: iconStyle,
+                title: projectLabel,
+                children: jsx(Codicon, { name: projectAppearanceFor(appearance, projectKey)?.icon ? customIcon : 'home', size: '0.76rem' })
+              }, 'home')
             : remote
               ? jsxs('span', {
                   className: 'relative flex size-4 shrink-0 items-center justify-center',
@@ -2283,8 +2328,9 @@ function gatewaySessionRow(project, session, focusedStoredSessionId, focusedSess
   const active = focusedSessionMatches(session, project, focusedStoredSessionId, focusedSessionOwner)
   const openingNow = opening === sessionKey
   const pinned = Boolean(options.pinned)
+  const projectColor = projectIconColor(options.appearance, project.key)
   const indent = options.indent === false ? '0' : '1.5rem'
-  const rowClassName = `codex-gateway-session-row group relative h-8 min-w-0 rounded-md text-left transition-colors hover:bg-(--ui-row-hover-background) ${active ? 'bg-(--ui-row-active-background) text-foreground' : ''} ${openingNow ? 'opacity-60' : ''}`
+  const rowClassName = `codex-gateway-session-row group relative h-8 min-w-0 rounded-xl text-left transition-colors hover:bg-(--ui-row-hover-background) ${active ? 'bg-(--ui-row-active-background) text-foreground' : ''} ${openingNow ? 'opacity-60' : ''}`
   const hint = pinned ? gatewayPinnedSessionHint(project, session) : null
   const row = jsxs('div', {
     'aria-current': active ? 'page' : undefined,
@@ -2292,9 +2338,10 @@ function gatewaySessionRow(project, session, focusedStoredSessionId, focusedSess
     'data-session-row': session.id,
     className: rowClassName,
     style: {
+      '--codex-project-color': projectColor || undefined,
       alignItems: 'stretch',
       backgroundColor: active ? 'var(--ui-row-active-background)' : undefined,
-      boxShadow: active ? 'inset 0 0 0 1px var(--ui-stroke-secondary)' : undefined,
+      boxShadow: active ? 'inset 0 0 0 1px var(--ui-stroke-secondary), 0 1px 3px rgba(120,104,80,0.08)' : undefined,
       display: 'grid',
       gridTemplateColumns: 'minmax(0, 1fr) max-content max-content',
       marginLeft: indent,
@@ -2588,8 +2635,10 @@ function GatewaySessionsPane() {
   const focusedBusy = useValue(host.state.busy)
   const projectDataRevision = useValue($gatewayProjectDataRevision)
   const projectOrderKeysRef = useRef([])
+  const sessionOrderIdsRef = useRef(new Map())
   const lastProjectSortEpochRef = useRef(-1)
   const previousBusyRef = useRef(false)
+  const previousFocusedSessionIdRef = useRef(null)
   const [projectSortEpoch, setProjectSortEpoch] = useState(0)
 
   const persistPrefs = patch => {
@@ -2640,11 +2689,17 @@ function GatewaySessionsPane() {
   }, [projectDataRevision, sessionsQueryKey])
 
   useEffect(() => {
-    if (shouldResortProjectsForUserInput({ previousBusy: previousBusyRef.current, busy: focusedBusy })) {
+    if (shouldResortProjectsForUserInput({
+      previousBusy: previousBusyRef.current,
+      busy: focusedBusy,
+      previousSessionId: previousFocusedSessionIdRef.current,
+      sessionId: focusedStoredSessionId
+    })) {
       setProjectSortEpoch(current => current + 1)
     }
     previousBusyRef.current = Boolean(focusedBusy)
-  }, [focusedBusy])
+    previousFocusedSessionIdRef.current = focusedStoredSessionId
+  }, [focusedBusy, focusedStoredSessionId])
 
   const sourceGroups = sessionsQuery.data?.groups || []
   const loadedSessionCount = sourceGroups.reduce((count, group) => count + group.sessions.filter(session => !hideScheduled || !sessionIsScheduled(session)).length, 0)
@@ -2727,8 +2782,32 @@ function GatewaySessionsPane() {
     const orderedAll = stabilizeProjectOrder(unfilteredProjects, previousKeys, { resort })
     lastProjectSortEpochRef.current = projectSortEpoch
     projectOrderKeysRef.current = orderedAll.map(project => project.key)
+
+    // Freeze each project's session order against the same epoch, so a live
+    // last_active tick inside a project no longer reshuffles its rows either.
+    const frozenSessionOrder = new Map()
+    for (const project of orderedAll) {
+      const previousIds = sessionOrderIdsRef.current.get(project.key) || []
+      const frozen = stabilizeSessionOrder(project.sessions, previousIds, { resort })
+      frozenSessionOrder.set(project.key, frozen.map(session => session.id))
+    }
+    sessionOrderIdsRef.current = frozenSessionOrder
+
     const visibleByKey = new Map(visibleProjects.map(project => [project.key, project]))
-    const visible = orderedAll.map(project => visibleByKey.get(project.key)).filter(Boolean)
+    const visible = orderedAll
+      .map(project => {
+        const visibleProject = visibleByKey.get(project.key)
+        if (!visibleProject) return null
+        // Re-apply the frozen id order to whatever subset search/filter kept.
+        const rank = new Map((frozenSessionOrder.get(project.key) || []).map((id, index) => [id, index]))
+        const sessions = [...visibleProject.sessions].sort((a, b) => {
+          const ra = rank.has(a.id) ? rank.get(a.id) : Number.MAX_SAFE_INTEGER
+          const rb = rank.has(b.id) ? rank.get(b.id) : Number.MAX_SAFE_INTEGER
+          return ra - rb || compareSessions(a, b)
+        })
+        return sessions === visibleProject.sessions ? visibleProject : { ...visibleProject, sessions }
+      })
+      .filter(Boolean)
     return orderProjectsWithPins(visible, pinnedProjects)
   }, [pinnedProjects, projectSortEpoch, unfilteredProjects, visibleProjects])
 
@@ -3112,18 +3191,25 @@ function GatewaySessionsPane() {
           ['open', '开放中'],
           ['pinned', '置顶'],
           ['recent', '24小时']
-        ].map(([value, label]) => jsx(Button, {
-          'aria-pressed': sessionFilter === value,
-          onClick: () => setSessionFilter(value),
-          size: 'xs',
-          title: value === 'open'
-            ? '后端会话仍开放，不代表模型正在生成'
-            : value === 'unread'
-              ? '未读依据同步状态，实时状态点可能先更新'
+        ].map(([value, label]) => {
+          const activeFilter = sessionFilter === value
+          return jsx(Button, {
+            'aria-pressed': activeFilter,
+            className: 'rounded-lg',
+            onClick: () => setSessionFilter(value),
+            size: 'xs',
+            style: activeFilter
+              ? { background: '#ffffff', border: '1px solid #e9e2d6', boxShadow: '0 1px 2px rgba(120,104,80,0.06)' }
               : undefined,
-          variant: sessionFilter === value ? 'secondary' : 'ghost',
-          children: label
-        }, value))
+            title: value === 'open'
+              ? '后端会话仍开放，不代表模型正在生成'
+              : value === 'unread'
+                ? '未读依据同步状态，实时状态点可能先更新'
+                : undefined,
+            variant: activeFilter ? 'secondary' : 'ghost',
+            children: label
+          }, value)
+        })
       }, 'filters'),
       sourcesIncomplete && (search.trim() || sessionFilter !== 'all') && jsx('div', {
         className: 'shrink-0 px-3 pt-1 text-[0.6rem] leading-tight text-(--ui-text-quaternary)',
@@ -3159,7 +3245,7 @@ function GatewaySessionsPane() {
               ...renderedRows.rows.map(renderRow => renderRow.type === 'pinned-header'
                 ? gatewayPinnedSectionHeader(collapsed, toggle, renderRow.count || 0)
                 : renderRow.type === 'pinned-session'
-                  ? gatewaySessionRow(renderRow.project, renderRow.session, focusedStoredSessionId, focusedSessionOwner, opening, open, applySessionChange, { indent: false, pinned: true })
+                  ? gatewaySessionRow(renderRow.project, renderRow.session, focusedStoredSessionId, focusedSessionOwner, opening, open, applySessionChange, { appearance: projectAppearance, indent: false, pinned: true })
                   : renderRow.type === 'project'
                 ? gatewayProjectHeaderRow(renderRow.project, collapsed, toggle, newChat, pinnedProjects, toggleProjectPin, projectAppearance, setAppearanceEditorProject)
                 : renderRow.type === 'more'
@@ -3170,7 +3256,7 @@ function GatewaySessionsPane() {
                       ? gatewayProjectLoadRow(renderRow.project, retryProjectSessions, 'loading')
                       : renderRow.type === 'project-error'
                         ? gatewayProjectLoadRow(renderRow.project, retryProjectSessions, 'error')
-                        : gatewaySessionRow(renderRow.project, renderRow.session, focusedStoredSessionId, focusedSessionOwner, opening, open, applySessionChange)),
+                        : gatewaySessionRow(renderRow.project, renderRow.session, focusedStoredSessionId, focusedSessionOwner, opening, open, applySessionChange, { appearance: projectAppearance })),
               renderedRows.bottomSpacer > 0 && jsx('div', { 'aria-hidden': true, style: { height: renderedRows.bottomSpacer } }, 'virtual-bottom')
             ]
           }, 'session-list'),
