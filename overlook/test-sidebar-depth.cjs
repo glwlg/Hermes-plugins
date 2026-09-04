@@ -69,4 +69,4 @@ assert.match(source, /\.codex-gateway-session-row\{[^}]*margin-left:1\.5rem/, 's
 assert.match(source, /\.codex-gateway-session-row\{[^}]*box-shadow:inset 1px 0 0/, 'session rows get a left guide rail via inset shadow')
 assert.doesNotMatch(source, /\.codex-gateway-session-row\{[^}]*border-radius:0/, 'session rows keep their left rounded corners')
 
-console.log('codex-studio sidebar depth contract passed')
+console.log('overlook sidebar depth contract passed')

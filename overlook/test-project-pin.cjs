@@ -78,15 +78,28 @@ vm.runInContext(
 )
 
 const mk = (key, active) => ({ key, label: key, remoteLabel: '', profile: 'default', sessions: [{ id: `${key}-s`, last_active: active }] })
+// Input is already in the stabilized (frozen) order; orderProjectsWithPins only
+// lifts pinned keys to the front WITHOUT re-sorting by live activity, so the
+// rail stops jumping when a background session's last_active ticks.
 const projects = [mk('a', 10), mk('b', 90), mk('c', 50)]
 const pinned = new Set(['a'])
 const ordered = orderContext.api.orderProjectsWithPins(projects, pinned)
 assert.deepEqual(
   JSON.parse(JSON.stringify(ordered.map(p => p.key))),
   ['a', 'b', 'c'],
-  'pinned projects lead; the rest keep activity order'
+  'pinned projects lead; the rest keep the incoming frozen order'
 )
-assert.equal(orderContext.api.orderProjectsWithPins(projects, new Set()).map(p => p.key)[0], 'b', 'no pins → pure activity order')
+assert.deepEqual(
+  JSON.parse(JSON.stringify(orderContext.api.orderProjectsWithPins(projects, new Set()).map(p => p.key))),
+  ['a', 'b', 'c'],
+  'no pins → incoming frozen order preserved verbatim (no live re-sort)'
+)
+// A pinned project already at the back jumps to the front, others keep order.
+assert.deepEqual(
+  JSON.parse(JSON.stringify(orderContext.api.orderProjectsWithPins(projects, new Set(['c'])).map(p => p.key))),
+  ['c', 'a', 'b'],
+  'a pinned project is lifted to the front, preserving relative order of the rest'
+)
 
 // --- project hint (hover info) ----------------------------------------------
 
@@ -130,4 +143,4 @@ assert.match(hint, /Debian 1|192\.168\.1\.10/, 'hint shows the gateway/source')
 assert.match(source, /pinnedProjectKeys/, 'project pins persist in local prefs')
 assert.match(source, /projectAppearance/, 'project appearance persists in local prefs')
 
-console.log('codex-studio project pin + info contract passed')
+console.log('overlook project pin + info contract passed')

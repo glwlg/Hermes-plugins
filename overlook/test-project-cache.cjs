@@ -80,7 +80,7 @@ async function main() {
   await context.api.fetchGatewayProjectSessions(project)
   assert.equal(calls, 2, 'explicit invalidation must allow a fresh RPC')
 
-  console.log('codex-studio project cache contract passed')
+  console.log('overlook project cache contract passed')
 }
 
 main().catch(error => {

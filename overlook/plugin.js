@@ -1,5 +1,5 @@
 /**
- * Codex Studio — appearance and cross-gateway session panel plugin for Hermes Desktop.
+ * Overlook — appearance and cross-gateway session panel plugin for Hermes Desktop.
  *
  * Adds a small cross-gateway session rail while keeping Hermes's existing
  * workflow and applies the Cold White visual system through the Desktop Plugin
@@ -8,7 +8,7 @@
  *   - sidebar, title bar, and status chrome: paper gray
  *   - conversation, assistant messages, dialogs, and composer: pure white
  *
- * The Codex Studio pane is a genuine `area: 'panes'` contribution. It
+ * The Overlook pane is a genuine `area: 'panes'` contribution. It
  * aggregates credential-free profile routes, reads each source's persisted
  * sessions through the owning connection, and opens a row with that exact
  * route. The pane is intentionally separate from Hermes's native $sessions
@@ -25,7 +25,7 @@
  * stable public data-slot hooks and restores every inline value when the plugin
  * is disabled or reloaded. Hermes core files are not modified.
  *
- * The Codex Studio pane uses only credential-free route metadata plus the
+ * The Overlook pane uses only credential-free route metadata plus the
  * SDK's source-scoped session read/open methods. It never persists or displays
  * endpoints, tokens, passwords, or other connection secrets. Gateway data stays
  * on `host.request` / `host.onEvent`; there is no `plugin_api.py` because that
@@ -37,7 +37,7 @@
  *   - status-bar chip: unread / failed-source count, click to refresh
  *
  * Save location:
- *   <HERMES_HOME>/desktop-plugins/codex-studio/plugin.js
+ *   <HERMES_HOME>/desktop-plugins/overlook/plugin.js
  *
  * Plain ESM: loaded uncompiled; UI uses jsx() calls rather than JSX syntax.
  * The only imports are the SDK, React, and React's supported JSX runtime.
@@ -72,12 +72,20 @@ import {
   PALETTE_AREA,
   queryClient as pluginQueryClient,
   relativeTime,
+  ROUTES_AREA,
   RowButton,
   requestTheme,
   SearchField,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   SessionStatusDot,
   STATUSBAR_AREAS,
+  Streamdown,
   THEMES_AREA,
+  Textarea,
   Tip,
   useQuery,
   useQueryClient,
@@ -86,17 +94,37 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
-const ID = 'codex-studio'
+const ID = 'overlook'
 const THEME_NAME = 'hermes-cold-white'
-const THEME_REVISION = 17
+const THEME_REVISION = 18
 const MESSAGE_COLUMN_WIDTH = '46rem'
 const USER_MESSAGE_MAX_WIDTH = '70%'
 const COMPOSER_RADIUS = '1.25rem'
 const USER_MESSAGE_RADIUS = '1.125rem'
 const COMPOSER_SHADOW =
-  '0 0 0 1px rgba(13, 28, 47, 0.06), 0 0.25rem 0.75rem rgba(13, 28, 47, 0.06), 0 0.875rem 2rem rgba(13, 28, 47, 0.08)'
+  '0 0 0 1px rgba(13, 28, 47, 0.05), 0 0.25rem 0.75rem rgba(13, 28, 47, 0.045), 0 0.875rem 2rem rgba(13, 28, 47, 0.06)'
 const MODERN_ICON_STROKE = '1.8'
-const GATEWAY_SESSIONS_KEY = ['codex-studio', 'gateway-sessions']
+const GATEWAY_SESSIONS_KEY = ['overlook', 'gateway-sessions']
+const MONITOR_ROUTE = '/overlook/monitor'
+const MONITOR_QUERY_KEY = ['overlook', 'session-monitor']
+const MONITOR_SESSION_LIMIT = 4
+const MONITOR_TRANSCRIPT_LIMIT = 48
+const MONITOR_REFRESH_MS = 2_000
+const MONITOR_IMAGE_MAX_BYTES = 25 * 1024 * 1024
+const MONITOR_IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp,image/bmp'
+const MONITOR_IMAGE_MIME_BY_EXTENSION = {
+  bmp: 'image/bmp',
+  gif: 'image/gif',
+  jpeg: 'image/jpeg',
+  jpg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp'
+}
+const EXTERNAL_SESSION_SOURCES = new Set([
+  'telegram', 'discord', 'slack', 'mattermost', 'matrix', 'signal', 'whatsapp',
+  'bluebubbles', 'photon', 'homeassistant', 'email', 'sms', 'webhook', 'api_server',
+  'weixin', 'wecom', 'qqbot', 'yuanbao', 'dingtalk', 'feishu'
+])
 const GATEWAY_SESSIONS_LIMIT = 80
 const GATEWAY_SESSIONS_LIMIT_MAX = 500
 // Do not poll gateway/profile state from a sidebar contribution. The public
@@ -140,6 +168,7 @@ const DEFAULT_GATEWAY_SESSION_PREFERENCES = {
 // older Desktop host renders a contribution one tick after registration.
 let gatewaySessionStorage = null
 let gatewaySessionStorageOwner = null
+let monitorWorkspaceClose = null
 const $gatewaySessionLimit = atom(GATEWAY_SESSIONS_LIMIT)
 const $gatewaySessionPrefs = atom(DEFAULT_GATEWAY_SESSION_PREFERENCES)
 const $gatewayProjectDataRevision = atom(0)
@@ -188,7 +217,7 @@ function writeGatewaySessionPreferences(next) {
   return normalized
 }
 
-const CODEX_THEME = {
+const OVERLOOK_THEME = {
   name: THEME_NAME,
   label: 'Hermes Cold White',
   description: '明亮的纸灰工作台，环绕纯白对话区，配以墨色控件和石墨色代码表面。',
@@ -229,7 +258,7 @@ const CODEX_THEME = {
 // Cold White intentionally exposes one bright palette. Supplying the same
 // colors for the host's dark preference prevents Desktop from synthesizing a
 // different variant while renderedModeFor keeps the actual window light.
-CODEX_THEME.darkColors = CODEX_THEME.colors
+OVERLOOK_THEME.darkColors = OVERLOOK_THEME.colors
 
 // Public semantic tokens already consumed by Hermes Desktop. The theme
 // contribution supplies the authored palette; these values remove normal
@@ -375,19 +404,43 @@ function modernIconStylesheet() {
   const brandMask = modernIconMask(MODERN_BRAND_PATHS, '0 0 48 48')
 
   return `${iconRules}span:has(> img[src*="nous-girl.jpg"]){position:relative!important;background-color:var(--ui-bg-elevated)!important}span:has(> img[src*="nous-girl.jpg"])>img[src*="nous-girl.jpg"]{opacity:0!important}span:has(> img[src*="nous-girl.jpg"])::after{content:"";position:absolute;inset:20%;display:block;background-color:var(--ui-accent);-webkit-mask-image:${brandMask};mask-image:${brandMask};-webkit-mask-position:center;mask-position:center;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;-webkit-mask-size:contain;mask-size:contain}
+[data-slot='aui_assistant-message-content'] [data-conversation-scaffold]{opacity:0.78}
+.codex-monitor-grid{display:grid;min-height:0;flex:1;gap:0.75rem;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr))}
+.codex-monitor-card{position:relative;display:flex;min-height:0;overflow:hidden;flex-direction:column;border:1px solid color-mix(in srgb,var(--monitor-project-color, #64748b) 28%,#d4d4d8);border-radius:12px;background:#ffffff;box-shadow:0 2px 8px rgba(13,28,47,0.06)}
+.codex-monitor-card::before{content:"";position:absolute;z-index:2;top:0;right:12px;left:12px;height:2px;border-radius:0 0 999px 999px;background:color-mix(in srgb,var(--monitor-project-color, #64748b) 72%,transparent)}
+.codex-monitor-empty-slot{align-items:center;justify-content:center;border-style:dashed;border-color:#dedee5;background:#fafafd;box-shadow:none;color:var(--ui-text-quaternary)}
+.codex-monitor-empty-slot::before{display:none}
+.codex-monitor-message-user{margin-left:auto;max-width:86%;border:1px solid #e2e2e6;border-radius:10px;background:#f3f4f5;padding:0.45rem 0.6rem;white-space:pre-wrap}
+.codex-monitor-status{align-self:flex-start}
+.codex-monitor-markdown{font-size:0.72rem;line-height:1.5;overflow-wrap:anywhere}
+.codex-monitor-markdown :where(p,ul,ol,pre,blockquote){margin:0.3rem 0}
+.codex-monitor-markdown :where(ul,ol){padding-left:1.1rem}
+.codex-monitor-markdown pre{max-width:100%;overflow:auto;border:1px solid var(--ui-stroke-tertiary);border-radius:8px;background:#f8f8fa;padding:0.5rem;font-size:0.65rem}
+.codex-monitor-new-field{display:flex;flex-direction:column;gap:0.35rem}
+.codex-monitor-new-label{font-size:0.7rem;font-weight:500;color:var(--ui-text-secondary)}
+.codex-monitor-new-images{display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center}
+.codex-monitor-new-thumb{position:relative;height:3rem;width:3rem;overflow:hidden;border:1px solid #e2e2e6;border-radius:8px;background:#f8f8fa}
+.codex-monitor-new-thumb img{display:block;height:100%;width:100%;object-fit:cover}
+.codex-monitor-new-thumb-remove{position:absolute;top:0.15rem;right:0.15rem;display:grid;place-items:center;width:1rem;height:1rem;border:0;border-radius:999px;background:rgba(15,23,42,0.72);color:#fff}
+@media(max-width:900px){.codex-monitor-grid{display:flex;overflow-y:auto;flex-direction:column}.codex-monitor-card{min-height:18rem}}
 .codex-gateway-session-row{position:relative;isolation:isolate}
 .codex-gateway-session-row [data-session-status]:not(:has([role="status"])){display:none!important}
 .codex-gateway-session-row [data-session-menu]{opacity:0;pointer-events:none}
 .codex-gateway-session-row:is(:hover,:focus-within) [data-session-status]{visibility:hidden}
 .codex-gateway-session-row:is(:hover,:focus-within) [data-session-menu],.codex-gateway-session-row [data-session-menu]:has([data-state="open"]){opacity:1;pointer-events:auto}
-.codex-gateway-session-row:has([class~="bg-(--ui-accent)"])::before,.codex-gateway-session-row:has([class~="border-(--ui-accent)"])::before{content:"";pointer-events:none;position:absolute;z-index:-1;inset:0;border-radius:8px;padding:1px;background:conic-gradient(from var(--codex-gateway-arc-angle,0deg),transparent 0deg,transparent 258deg,var(--codex-project-color, #1f2937) 286deg,color-mix(in srgb, var(--codex-project-color, #64748b) 55%, transparent) 326deg,transparent 360deg);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;animation:codex-gateway-running-border 2s linear infinite}
-@property --codex-gateway-arc-angle{syntax:"<angle>";initial-value:0deg;inherits:false}
-@keyframes codex-gateway-running-border{to{--codex-gateway-arc-angle:360deg}}
-@media (prefers-reduced-motion: reduce){.codex-gateway-session-row:has([class~="bg-(--ui-accent)"])::before,.codex-gateway-session-row:has([class~="border-(--ui-accent)"])::before{animation:none;background:#94A3B8}}
+.codex-gateway-running-arc{display:none;--arc-c1:var(--codex-project-color, #1f2937);--arc-duration:3s;--arc-radius:0.75rem;transform:scaleX(-1)}
+.codex-gateway-session-row:has([class~="bg-(--ui-accent)"])>.codex-gateway-running-arc,.codex-gateway-session-row:has([class~="border-(--ui-accent)"])>.codex-gateway-running-arc{display:block}
+.codex-gateway-filter-tab{border:1px solid transparent!important;background:transparent!important;box-shadow:none!important;transition:background-color 120ms ease,border-color 120ms ease,box-shadow 120ms ease}
+.codex-gateway-filter-tab[aria-pressed="false"]:hover{background:#ffffff!important;border-color:#f0ebe2!important}
+.codex-gateway-filter-tab[aria-pressed="true"]{background:#ffffff!important;border-color:#e9e2d6!important;box-shadow:0 1px 2px rgba(120,104,80,0.06)!important}
 .codex-gateway-project-row{margin-top:4px;background:#ffffff;border:1px solid #e9e2d6;border-radius:8px;box-shadow:0 1px 2px rgba(120,104,80,0.05)}
 .codex-gateway-project-row:hover{background:#fbfaf7;border-color:#ded4c2}
 .codex-gateway-project-row .codex-project-label{font-weight:600}
-.codex-gateway-session-row{margin-top:4px;margin-left:1.5rem;box-shadow:inset 1px 0 0 var(--codex-project-color, #ece5d8)}`
+.codex-gateway-project-meta{opacity:0.72;transition:opacity 120ms ease}
+.codex-gateway-project-row:is(:hover,:focus-within) .codex-gateway-project-meta{opacity:1}
+.codex-gateway-session-row{margin-top:4px;margin-left:1.5rem;box-shadow:inset 1px 0 0 color-mix(in srgb,var(--codex-project-color, #ece5d8) 30%,#ece5d8)}
+.codex-gateway-session-row [data-session-time]{opacity:0.78;transition:opacity 120ms ease}
+.codex-gateway-session-row:is(:hover,:focus-within) [data-session-time]{opacity:1}`
 }
 
 function syncModernIconStyles(active) {
@@ -550,6 +603,14 @@ function sessionActive(session) {
   return sessionBooleanValue(session?.is_active)
 }
 
+function sessionIsExternalChannel(session) {
+  const source = typeof session?.source === 'string' ? session.source.trim().toLowerCase() : ''
+  if (EXTERNAL_SESSION_SOURCES.has(source)) return true
+  if (String(session?.handoff_state || '').trim().toLowerCase() !== 'completed') return false
+  const handoff = typeof session?.handoff_platform === 'string' ? session.handoff_platform.trim().toLowerCase() : ''
+  return EXTERNAL_SESSION_SOURCES.has(handoff)
+}
+
 function eventSessionId(event) {
   const payload = event?.payload && typeof event.payload === 'object' ? event.payload : null
   return String(event?.session_id || payload?.session_id || payload?.stored_session_id || '').trim()
@@ -609,6 +670,414 @@ function compareProjects(a, b) {
   }
   const profileOrder = String(a?.profile || '').localeCompare(String(b?.profile || ''), undefined, { sensitivity: 'base' })
   return profileOrder || String(a?.key || '').localeCompare(String(b?.key || ''))
+}
+
+function monitorSessionCandidates(projects) {
+  const seen = new Set()
+  const entries = []
+
+  for (const project of Array.isArray(projects) ? projects : []) {
+    const route = project?.route || {}
+    const owner = [route.connectionId, route.profile, route.targetProfile].map(value => String(value || '').trim()).filter(Boolean).join('::') || String(project?.key || '')
+    const sessions = [
+      ...(Array.isArray(project?.prefetchedSessions) ? project.prefetchedSessions : []),
+      ...(Array.isArray(project?.sessions) ? project.sessions : [])
+    ]
+    for (const session of sessions) {
+      const sessionId = String(session?.id || '').trim()
+      const identity = sessionId ? `${owner}::${sessionId}` : ''
+      if (!identity || seen.has(identity) || !sessionActive(session) || sessionIsExternalChannel(session)) continue
+      seen.add(identity)
+      entries.push({ key: identity, project, session })
+    }
+  }
+
+  return entries.sort((a, b) => sessionActivityValue(b.session) - sessionActivityValue(a.session) || a.key.localeCompare(b.key))
+}
+
+function monitorSessionEntries(projects, limit) {
+  const requested = Number(limit)
+  const max = Number.isFinite(requested) && requested > 0
+    ? Math.min(MONITOR_SESSION_LIMIT, Math.floor(requested))
+    : MONITOR_SESSION_LIMIT
+  return monitorSessionCandidates(projects).slice(0, max)
+}
+
+function stabilizeMonitorSlotKeys(previousKeys, candidates, limit) {
+  const requested = Number(limit)
+  const size = Number.isFinite(requested) && requested > 0
+    ? Math.min(MONITOR_SESSION_LIMIT, Math.floor(requested))
+    : MONITOR_SESSION_LIMIT
+  const candidateKeys = []
+  const eligible = new Set()
+
+  for (const entry of Array.isArray(candidates) ? candidates : []) {
+    const key = String(entry?.key || '').trim()
+    if (!key || eligible.has(key)) continue
+    eligible.add(key)
+    candidateKeys.push(key)
+  }
+
+  const previous = Array.isArray(previousKeys) ? previousKeys : []
+  const next = Array.from({ length: size }, (_, index) => {
+    const key = String(previous[index] || '').trim()
+    return key && eligible.has(key) ? key : ''
+  })
+  const occupied = new Set(next.filter(Boolean))
+
+  for (const key of candidateKeys) {
+    if (occupied.has(key)) continue
+    const emptyIndex = next.indexOf('')
+    if (emptyIndex === -1) break
+    next[emptyIndex] = key
+    occupied.add(key)
+  }
+
+  return next
+}
+
+function monitorScrollToBottom(element) {
+  if (!element) return false
+  element.scrollTop = element.scrollHeight
+  return true
+}
+
+function monitorContentText(value) {
+  if (typeof value === 'string') return value.trim()
+  if (Array.isArray(value)) {
+    return value
+      .map(part => {
+        if (typeof part === 'string') return part.trim()
+        if (!part || typeof part !== 'object') return ''
+        return monitorContentText(part.text ?? part.content ?? part.output ?? '')
+      })
+      .filter(Boolean)
+      .join('\n')
+  }
+  if (value && typeof value === 'object') {
+    return monitorContentText(value.text ?? value.content ?? value.output ?? '')
+  }
+  return ''
+}
+
+function monitorMessageText(message) {
+  if (!message || typeof message !== 'object') return ''
+  return monitorContentText(message.display_content ?? message.text ?? message.content ?? '')
+}
+
+function normalizeMonitorTranscript(response) {
+  const rows = Array.isArray(response?.messages)
+    ? response.messages
+    : (Array.isArray(response?.data) ? response.data : [])
+  return rows.filter(row => row && typeof row === 'object')
+}
+
+function monitorVisibleMessages(response, limit) {
+  const requested = Number(limit)
+  const max = Number.isFinite(requested) && requested > 0 ? Math.floor(requested) : 18
+  const visible = []
+  for (const [index, message] of normalizeMonitorTranscript(response).entries()) {
+    if (message.display_kind === 'hidden' || !['user', 'assistant'].includes(message.role)) continue
+    const text = monitorMessageText(message)
+    if (!text) continue
+    visible.push({
+      key: String(message.row_id ?? message.id ?? `${message.timestamp || 0}:${index}`),
+      message,
+      text
+    })
+  }
+  return visible.slice(-max)
+}
+
+function monitorMessageIsToolActivity(message) {
+  if (!message || typeof message !== 'object') return false
+  const role = String(message.role || '').trim().toLowerCase()
+  if (role === 'tool') return true
+  if (String(message.tool_name || '').trim()) return true
+  return Array.isArray(message.tool_calls) && message.tool_calls.length > 0
+}
+
+function monitorWallMessages(response, session, limit) {
+  const rows = normalizeMonitorTranscript(response)
+  const wall = [...monitorVisibleMessages(response, limit)]
+  if (!wall.some(row => row.message && row.message.role === 'user')) {
+    const preview = String(session?.preview || '').trim()
+    if (preview) {
+      wall.unshift({
+        key: 'monitor-session-preview',
+        message: { role: 'user' },
+        text: preview
+      })
+    }
+  }
+
+  let lastTextIndex = -1
+  let lastToolIndex = -1
+  for (const [index, message] of rows.entries()) {
+    if (monitorMessageIsToolActivity(message)) lastToolIndex = index
+    if (message.display_kind === 'hidden' || !['user', 'assistant'].includes(message.role)) continue
+    if (!monitorMessageText(message)) continue
+    lastTextIndex = index
+  }
+  if (rows.length === 0 && Number(session?.tool_call_count) > 0) {
+    lastToolIndex = 0
+  }
+  if (lastToolIndex > lastTextIndex) {
+    wall.push({
+      key: 'monitor-working',
+      kind: 'status',
+      message: { role: 'assistant' },
+      text: '正在执行任务…'
+    })
+  }
+  return wall
+}
+
+function monitorTranscriptRequest(project, session) {
+  const route = sessionRoute(project)
+  const sessionId = String(session?.id || '').trim()
+  if (!route || !sessionId) {
+    throw new Error('Unable to resolve the monitored session owner.')
+  }
+  const profile = routeTargetProfile(route)
+  const query = `limit=${MONITOR_TRANSCRIPT_LIMIT}&offset=0&order=latest&include_compacted=true&profile=${encodeURIComponent(profile)}`
+  return {
+    connectionId: route.connectionId,
+    path: `/api/sessions/${encodeURIComponent(sessionId)}/messages?${query}`,
+    profile,
+    timeoutMs: 15_000
+  }
+}
+
+async function fetchMonitorTranscript(project, session) {
+  const api = typeof window !== 'undefined' ? window.hermesDesktop?.api : null
+  if (typeof api !== 'function') {
+    throw new Error('Hermes Desktop transcript API unavailable.')
+  }
+  return normalizeMonitorTranscript(await api(monitorTranscriptRequest(project, session)))
+}
+
+function monitorModelChoiceKey(provider, model) {
+  return JSON.stringify([String(provider || '').trim(), String(model || '').trim()])
+}
+
+function monitorModelChoiceFromKey(value) {
+  try {
+    const parsed = JSON.parse(String(value || ''))
+    const provider = Array.isArray(parsed) ? String(parsed[0] || '').trim() : ''
+    const model = Array.isArray(parsed) ? String(parsed[1] || '').trim() : ''
+    return provider && model ? { model, provider } : null
+  } catch {
+    return null
+  }
+}
+
+function normalizeMonitorModelOptions(response) {
+  const providers = []
+  const seenProviders = new Set()
+  for (const row of Array.isArray(response?.providers) ? response.providers : []) {
+    const provider = String(row?.slug || '').trim()
+    if (!provider || row?.authenticated === false || seenProviders.has(provider)) continue
+    const models = []
+    const seenModels = new Set()
+    for (const value of Array.isArray(row?.models) ? row.models : []) {
+      const model = typeof value === 'string'
+        ? value.trim()
+        : String(value?.id || value?.name || '').trim()
+      if (!model || seenModels.has(model)) continue
+      seenModels.add(model)
+      models.push(model)
+    }
+    if (!models.length) continue
+    seenProviders.add(provider)
+    providers.push({
+      label: String(row?.name || provider).trim() || provider,
+      models,
+      provider
+    })
+  }
+
+  const choices = providers.flatMap(row => row.models.map(model => ({
+    key: monitorModelChoiceKey(row.provider, model),
+    label: `${row.label} · ${model}`,
+    model,
+    provider: row.provider
+  })))
+  const preferredProvider = String(response?.provider || '').trim()
+  const preferredModel = String(response?.model || '').trim()
+  const preferred = choices.find(choice => choice.provider === preferredProvider && choice.model === preferredModel)
+  return {
+    choices,
+    defaultChoiceKey: preferred?.key || choices[0]?.key || ''
+  }
+}
+
+async function fetchMonitorModelOptions(project) {
+  const route = project?.route
+  if (!route || typeof host.requestProfile !== 'function') {
+    throw new Error('Hermes Desktop model catalog unavailable.')
+  }
+  return host.requestProfile(route, 'model.options', {
+    explicit_only: true,
+    include_unconfigured: false
+  })
+}
+
+function monitorSessionCreateParams(project, model) {
+  const route = project?.route
+  const targetPath = projectWorkspacePath(project)
+  if (!route || !String(route.connectionId || '').trim()) {
+    throw new Error('Unable to resolve the selected gateway.')
+  }
+  if (!isHomeProject(project) && !targetPath) {
+    throw new Error(`Unable to resolve the workspace for ${projectDisplayLabel(project)}.`)
+  }
+  const selection = model && typeof model === 'object' ? model : {}
+  const selectedModel = String(selection.model || '').trim()
+  const selectedProvider = String(selection.provider || '').trim()
+  if (!selectedModel || !selectedProvider) {
+    throw new Error('A model selection is required.')
+  }
+  return {
+    cols: 96,
+    ...(targetPath ? { cwd: targetPath } : {}),
+    model: selectedModel,
+    profile: routeTargetProfile(route),
+    provider: selectedProvider,
+    source: 'desktop'
+  }
+}
+
+function monitorImageAttachPayload(image, sessionId) {
+  const filename = String(image?.name || '').trim()
+  const dataUrl = String(image?.dataUrl || '').trim()
+  const match = /^data:image\/[a-z0-9.+-]+;base64,([a-z0-9+/=\s]+)$/i.exec(dataUrl)
+  const contentBase64 = String(match?.[1] || '').replace(/\s+/g, '')
+  if (!filename || !contentBase64) {
+    throw new Error('Invalid image attachment.')
+  }
+  return {
+    content_base64: contentBase64,
+    filename,
+    session_id: String(sessionId || '').trim()
+  }
+}
+
+async function createMonitorSession(options) {
+  const input = options && typeof options === 'object' ? options : {}
+  const project = input.project
+  const route = project?.route
+  const prompt = String(input.prompt || '').trim()
+  const images = Array.isArray(input.images) ? input.images : []
+  if (!route || !prompt || typeof host.requestProfile !== 'function') {
+    throw new Error('Unable to create the session.')
+  }
+
+  let release = null
+  let runtimeId = ''
+  let promptIssued = false
+  try {
+    if (typeof host.retainProfile === 'function') {
+      release = await host.retainProfile(route)
+    }
+    const created = await host.requestProfile(route, 'session.create', monitorSessionCreateParams(project, input.model))
+    runtimeId = String(created?.session_id || '').trim()
+    const storedId = String(created?.stored_session_id || '').trim()
+    if (!runtimeId || !storedId) {
+      throw new Error('The gateway did not return a session id.')
+    }
+
+    for (const image of images) {
+      const attached = await host.requestProfile(route, 'image.attach_bytes', monitorImageAttachPayload(image, runtimeId))
+      if (!attached?.attached) {
+        throw new Error('Image attachment was rejected.')
+      }
+    }
+
+    promptIssued = true
+    const submitted = await host.requestProfile(route, 'prompt.submit', { session_id: runtimeId, text: prompt })
+    if (submitted?.ok === false) {
+      throw new Error('The first prompt was rejected.')
+    }
+    return { runtimeId, storedId }
+  } catch (error) {
+    // A rejected image happens before any turn can persist. Close that temporary
+    // runtime on its owner; after prompt.submit starts, do not guess whether a
+    // disconnected caller missed a turn that the gateway already accepted.
+    if (runtimeId && !promptIssued) {
+      try {
+        await host.requestProfile(route, 'session.close', { session_id: runtimeId })
+      } catch {}
+    }
+    throw error
+  } finally {
+    try { release?.() } catch {}
+  }
+}
+
+function monitorGatewayOptions(sourceGroups) {
+  const seen = new Set()
+  const choices = []
+  for (const group of Array.isArray(sourceGroups) ? sourceGroups : []) {
+    const route = group?.route
+    const key = route ? routeKey(route) : ''
+    if (!key || group?.error || seen.has(key)) continue
+    seen.add(key)
+    const source = String(group?.label || group?.remoteLabel || route.connectionId || 'Gateway').trim()
+    const profile = routeTargetProfile(route)
+    choices.push({
+      key,
+      label: profile.toLowerCase() === PROFILE_SCOPE_DEFAULT ? source : `${source} · ${profile}`,
+      route
+    })
+  }
+  return choices
+}
+
+function monitorProjectsForGateway(projects, gatewayKey) {
+  const target = String(gatewayKey || '').trim()
+  return (Array.isArray(projects) ? projects : []).filter(project => routeKey(project?.route) === target)
+}
+
+function monitorImageMime(file) {
+  const reported = String(file?.type || '').trim().toLowerCase()
+  if (Object.values(MONITOR_IMAGE_MIME_BY_EXTENSION).includes(reported)) {
+    return reported
+  }
+  const name = String(file?.name || '').trim()
+  const extension = name.includes('.') ? name.split('.').pop().toLowerCase() : ''
+  return MONITOR_IMAGE_MIME_BY_EXTENSION[extension] || ''
+}
+
+function readMonitorImageFile(file) {
+  const name = String(file?.name || '').trim()
+  const size = Number(file?.size) || 0
+  const mime = monitorImageMime(file)
+  if (!name || !mime) {
+    return Promise.reject(new Error('只支持 PNG、JPG、GIF、WebP 或 BMP 图片。'))
+  }
+  if (size <= 0 || size > MONITOR_IMAGE_MAX_BYTES) {
+    return Promise.reject(new Error('每张图片不能超过 25 MB。'))
+  }
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.addEventListener('error', () => reject(new Error('图片读取失败。')))
+    reader.addEventListener('load', () => {
+      const value = typeof reader.result === 'string' ? reader.result : ''
+      const comma = value.indexOf(',')
+      const content = comma >= 0 ? value.slice(comma + 1).replace(/\s+/g, '') : ''
+      if (!content) {
+        reject(new Error('图片读取失败。'))
+        return
+      }
+      resolve({
+        dataUrl: `data:${mime};base64,${content}`,
+        id: `${name}:${size}:${Number(file?.lastModified) || 0}:${Date.now()}:${Math.random()}`,
+        name
+      })
+    })
+    reader.readAsDataURL(file)
+  })
 }
 
 const PROJECT_APPEARANCE_COLORS = {
@@ -720,6 +1189,16 @@ function shouldResortProjectsForUserInput(input) {
   return Boolean(input) && input.previousBusy === false && input.busy === true
 }
 
+function pendingNewChatAppeared(pending, projects) {
+  const projectKey = String(pending?.projectKey || '').trim()
+  const sessionId = String(pending?.sessionId || '').trim()
+  if (!projectKey || !sessionId) {
+    return false
+  }
+  const project = (Array.isArray(projects) ? projects : []).find(row => row?.key === projectKey)
+  return Boolean(project?.sessions?.some(session => session?.id === sessionId))
+}
+
 function stabilizeProjectOrder(projects, previousKeys, options) {
   const list = Array.isArray(projects) ? [...projects] : []
   const previous = Array.isArray(previousKeys) ? previousKeys : []
@@ -745,8 +1224,9 @@ function stabilizeProjectOrder(projects, previousKeys, options) {
 
 // Same freeze as stabilizeProjectOrder but for the sessions inside one project:
 // keep the previous id order between resort epochs, only re-sorting by live
-// activity on the first paint or when the user actually sends. New sessions
-// append in activity order so a fresh chat still surfaces.
+// activity on the first paint or when the user actually sends. Unsolicited
+// newcomers append after frozen rows; a chat created from this pane is promoted
+// once its exact project/session pair appears in refreshed data.
 function stabilizeSessionOrder(sessions, previousIds, options) {
   const list = Array.isArray(sessions) ? [...sessions] : []
   const previous = Array.isArray(previousIds) ? previousIds : []
@@ -1422,7 +1902,7 @@ function subscribeGatewaySessionEvents() {
       if (patchedGroups !== current?.groups) {
         pluginQueryClient.setQueryData(sessionsQueryKey, value => value ? { ...value, groups: patchSessionGroupsFromEvents(value.groups, events) } : value)
       }
-      void pluginQueryClient.refetchQueries({ queryKey: sessionsQueryKey, type: 'active' })
+      void pluginQueryClient.refetchQueries({ queryKey: GATEWAY_SESSIONS_KEY, type: 'active' })
     }, GATEWAY_EVENT_REFRESH_DEBOUNCE_MS)
   }
 
@@ -2141,9 +2621,9 @@ function gatewayProjectHeaderRow(project, collapsed, toggle, newChat, pinnedProj
                   children: jsx(Codicon, { name: customIcon, size: '0.76rem' })
                 }, 'folder'),
           jsx('span', { className: 'codex-project-label min-w-0 flex-1 truncate text-[0.7rem] font-medium text-foreground/80', children: projectLabel }, 'label'),
-          sourceBadge && jsx('span', { className: 'max-w-28 shrink-0 truncate px-1 text-[0.58rem] text-(--ui-text-quaternary)', title: sourceBadge, children: sourceBadge }, 'source'),
+          sourceBadge && jsx('span', { className: 'codex-gateway-project-meta max-w-28 shrink-0 truncate px-1 text-[0.58rem] text-(--ui-text-quaternary)', title: sourceBadge, children: sourceBadge }, 'source'),
           jsx('span', {
-            className: 'text-[0.6rem] tabular-nums text-(--ui-text-quaternary)',
+            className: 'codex-gateway-project-meta text-[0.6rem] tabular-nums text-(--ui-text-quaternary)',
             title: project.loadUnsupported ? projectSessionsUnsupportedMessage() : undefined,
             children: Math.max(project.sessions.length, Number(project.sessionCount) || 0)
           }, 'count')
@@ -2341,7 +2821,7 @@ function gatewaySessionRow(project, session, focusedStoredSessionId, focusedSess
       '--codex-project-color': projectColor || undefined,
       alignItems: 'stretch',
       backgroundColor: active ? 'var(--ui-row-active-background)' : undefined,
-      boxShadow: active ? 'inset 0 0 0 1px var(--ui-stroke-secondary), 0 1px 3px rgba(120,104,80,0.08)' : undefined,
+      boxShadow: active ? 'inset 0 0 0 1px var(--ui-stroke-secondary), 0 1px 2px rgba(120,104,80,0.06)' : undefined,
       display: 'grid',
       gridTemplateColumns: 'minmax(0, 1fr) max-content max-content',
       marginLeft: indent,
@@ -2349,6 +2829,10 @@ function gatewaySessionRow(project, session, focusedStoredSessionId, focusedSess
       width: `calc(100% - ${indent})`
     },
     children: [
+      jsx('span', {
+        'aria-hidden': true,
+        className: 'arc-border arc-row codex-gateway-running-arc'
+      }, 'running-arc'),
       jsx(RowButton, {
         className: 'flex w-full min-w-0 items-center rounded-md bg-transparent px-2 py-1 text-left hover:bg-transparent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-(--ui-accent)',
         disabled: openingNow,
@@ -2552,11 +3036,11 @@ function fetchSharedGatewaySessionGroups(profileScope) {
   }
 }
 
-function useGatewaySessionsQuery() {
+function useGatewaySessionsQuery(profileScopeOverride) {
   const queryClient = useQueryClient()
   const prefs = useValue($gatewaySessionPrefs)
   const sessionLimit = useValue($gatewaySessionLimit)
-  const profileScope = prefs.profileScope
+  const profileScope = profileScopeOverride === PROFILE_SCOPE_ALL ? PROFILE_SCOPE_ALL : prefs.profileScope
   const sessionsQueryKey = useMemo(() => [...GATEWAY_SESSIONS_KEY, profileScope], [profileScope])
   const previousSessionLimitRef = useRef(sessionLimit)
   const sessionsQuery = useQuery({
@@ -2615,6 +3099,557 @@ function GatewayInboxChip() {
   })
 }
 
+function openSessionMonitorWorkspace() {
+  if (typeof host.openWorkspace !== 'function') {
+    host.navigate(MONITOR_ROUTE)
+    return
+  }
+  try {
+    monitorWorkspaceClose = host.openWorkspace('overlook-monitor', {
+      dock: { pane: 'workspace', pos: 'center' },
+      minWidth: '32rem',
+      onClose: () => { monitorWorkspaceClose = null },
+      render: () => jsx(SessionMonitorPage, {}),
+      title: '监控室'
+    })
+  } catch {
+    host.notify({ kind: 'error', message: '无法打开多会话监控室。' })
+  }
+}
+
+function openMonitoredSession(project, session) {
+  let opening
+  try {
+    opening = host.openSession(session.id, {
+      intent: 'in-place',
+      keepAllProfilesScope: true,
+      profile: project.route.profile,
+      route: project.route
+    })
+    host.navigate(`/${encodeURIComponent(session.id)}`)
+  } catch {
+    host.notify({ kind: 'error', message: '无法打开监控中的会话。' })
+    return
+  }
+  void Promise.resolve(opening).catch(error => {
+    if (error instanceof Error && error.message === 'Session open was superseded by a newer selection.') {
+      return
+    }
+    host.notify({ kind: 'error', message: '无法打开监控中的会话。' })
+  })
+}
+
+function MonitorMessageRow({ row }) {
+  if (row.kind === 'status') {
+    return jsx('div', {
+      className: 'codex-monitor-status text-[0.68rem] italic text-(--ui-text-quaternary)',
+      children: row.text
+    }, row.key)
+  }
+  const role = row.message.role
+  if (role === 'user') {
+    return jsx('div', {
+      className: 'codex-monitor-message-user text-[0.7rem] leading-relaxed text-foreground/85',
+      children: row.text
+    }, row.key)
+  }
+  return jsx('div', {
+    className: 'codex-monitor-markdown text-foreground/90',
+    children: jsx(Streamdown, {
+      controls: false,
+      mode: 'static',
+      parseIncompleteMarkdown: false,
+      children: row.text
+    })
+  }, row.key)
+}
+
+function MonitorEmptySlot({ index }) {
+  const seat = index + 1
+  return jsxs('section', {
+    'aria-label': `监控卡座 ${seat} 空闲`,
+    className: 'codex-monitor-card codex-monitor-empty-slot',
+    'data-monitor-slot': String(seat),
+    children: [
+      jsx('span', {
+        className: 'mb-2 flex size-8 items-center justify-center rounded-xl border border-(--ui-stroke-tertiary) bg-white',
+        children: jsx(Codicon, { name: 'add', size: '0.85rem' })
+      }, 'icon'),
+      jsx('span', { className: 'text-[0.68rem] font-medium', children: `卡座 ${seat} 空闲` }, 'label'),
+      jsx('span', { className: 'mt-1 text-[0.6rem]', children: '新的活跃会话会自动入座' }, 'hint')
+    ]
+  })
+}
+
+function MonitorSessionCard({ appearance, entry, slotIndex }) {
+  const { project, session } = entry
+  const transcriptQuery = useQuery({
+    queryKey: [...MONITOR_QUERY_KEY, routeKey(project.route), session.id],
+    queryFn: () => fetchMonitorTranscript(project, session),
+    refetchInterval: MONITOR_REFRESH_MS,
+    refetchIntervalInBackground: false,
+    refetchOnReconnect: true,
+    refetchOnWindowFocus: true,
+    retry: 1,
+    staleTime: MONITOR_REFRESH_MS - 250
+  })
+  const transcript = Array.isArray(transcriptQuery.data) ? transcriptQuery.data : []
+  const messages = useMemo(() => monitorWallMessages({ messages: transcript }, session, 18), [session, transcript])
+  const transcriptVersion = messages.map(row => `${row.key}:${row.text}`).join('|')
+  const scrollRef = useRef(null)
+  const contentRef = useRef(null)
+  useEffect(() => {
+    const element = scrollRef.current
+    const content = contentRef.current
+    if (!element || !content) return undefined
+
+    const scrollToBottom = () => monitorScrollToBottom(element)
+    let secondFrame = 0
+    const firstFrame = window.requestAnimationFrame(() => {
+      scrollToBottom()
+      secondFrame = window.requestAnimationFrame(scrollToBottom)
+    })
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(scrollToBottom)
+    if (observer) observer.observe(content)
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame)
+      if (secondFrame) window.cancelAnimationFrame(secondFrame)
+      observer?.disconnect()
+    }
+  }, [entry.key, transcriptVersion])
+
+  const color = projectIconColor(appearance, project.key)
+  const icon = isHomeProject(project)
+    ? (projectAppearanceFor(appearance, project.key)?.icon ? projectIconName(appearance, project.key) : 'home')
+    : projectIconName(appearance, project.key)
+  const source = projectSourceBadge(project)
+
+  return jsxs('section', {
+    'aria-label': `监控会话 ${sessionRowTitle(session)}`,
+    className: 'codex-monitor-card',
+    'data-monitor-session': session.id,
+    'data-monitor-slot': String(slotIndex + 1),
+    style: { '--monitor-project-color': color || '#64748b' },
+    children: [
+      jsxs('header', {
+        className: 'flex h-11 shrink-0 items-center gap-2 border-b border-(--ui-stroke-quaternary) px-3 pt-0.5',
+        children: [
+          jsx('span', {
+            className: 'flex size-6 shrink-0 items-center justify-center rounded-lg bg-(--ui-bg-secondary)',
+            style: color ? { color } : undefined,
+            children: jsx(Codicon, { name: icon, size: '0.85rem' })
+          }, 'project-icon'),
+          jsxs('div', {
+            className: 'min-w-0 flex-1',
+            children: [
+              jsx('div', { className: 'truncate text-xs font-semibold text-foreground', title: sessionRowTitle(session), children: sessionRowTitle(session) }, 'title'),
+              jsx('div', {
+                className: 'flex min-w-0 items-center gap-1.5 text-[0.6rem] text-(--ui-text-quaternary)',
+                children: [
+                  jsx('span', { className: 'truncate', children: projectDisplayLabel(project) }, 'project'),
+                  source ? jsx('span', { 'aria-hidden': true, children: '·' }, 'dot') : null,
+                  source ? jsx('span', { className: 'truncate', children: source }, 'source') : null,
+                  jsx('span', { className: 'ml-auto shrink-0 tabular-nums', children: sessionRowTime(session) }, 'time')
+                ]
+              }, 'meta')
+            ]
+          }, 'labels'),
+          jsx('span', {
+            className: 'flex size-5 shrink-0 items-center justify-center',
+            children: jsx(SessionStatusDot, { session, storedSessionId: session.id })
+          }, 'status'),
+          jsx(Button, {
+            'aria-label': `打开完整会话 ${sessionRowTitle(session)}`,
+            className: 'size-7 shrink-0',
+            onClick: () => openMonitoredSession(project, session),
+            size: 'icon-xs',
+            title: '打开完整会话',
+            variant: 'ghost',
+            children: jsx(Codicon, { name: 'arrow-small-right', size: '0.8rem' })
+          }, 'open')
+        ]
+      }, 'header'),
+      jsx('div', {
+        className: 'min-h-0 flex-1 overflow-y-auto px-3 py-2.5',
+        ref: scrollRef,
+        children: transcriptQuery.isLoading && messages.length === 0
+          ? jsx('div', {
+              className: 'flex h-full items-center justify-center gap-2 text-[0.68rem] text-(--ui-text-quaternary)',
+              children: [
+                jsx(GlyphSpinner, { ariaLabel: '正在读取会话', className: 'text-xs' }, 'spinner'),
+                jsx('span', { children: '正在读取会话…' }, 'label')
+              ]
+            })
+          : transcriptQuery.error && messages.length === 0
+            ? jsx('div', {
+                className: 'flex h-full flex-col items-center justify-center gap-2 text-center text-[0.68rem] text-(--ui-text-quaternary)',
+                children: [
+                  jsx('span', { children: '暂时无法读取会话内容' }, 'label'),
+                  jsx(Button, { onClick: () => void transcriptQuery.refetch(), size: 'xs', variant: 'ghost', children: '重试' }, 'retry')
+                ]
+              })
+          : jsx('div', {
+                  className: 'flex min-h-full flex-col justify-end gap-2',
+                  ref: contentRef,
+                  children: messages.map(row => jsx(MonitorMessageRow, { row }, row.key))
+                })
+      }, 'transcript')
+    ]
+  }, entry.key)
+}
+
+function MonitorNewSessionDialog({ open, onOpenChange, onCreated, projects, sourceGroups }) {
+  const gatewayChoices = useMemo(() => monitorGatewayOptions(sourceGroups), [sourceGroups])
+  const [gatewayKey, setGatewayKey] = useState('')
+  const [projectKey, setProjectKey] = useState('')
+  const [modelKey, setModelKey] = useState('')
+  const [prompt, setPrompt] = useState('')
+  const [images, setImages] = useState([])
+  const [submitting, setSubmitting] = useState(false)
+  const fileRef = useRef(null)
+
+  const selectedGateway = gatewayChoices.find(choice => choice.key === gatewayKey) || gatewayChoices[0] || null
+  const selectedGatewayKey = selectedGateway?.key || ''
+  const gatewayProjects = useMemo(
+    () => monitorProjectsForGateway(projects, selectedGatewayKey),
+    [projects, selectedGatewayKey]
+  )
+  const selectedProject = gatewayProjects.find(project => project.key === projectKey) || gatewayProjects[0] || null
+  const modelQuery = useQuery({
+    enabled: open && Boolean(selectedProject?.route),
+    queryFn: () => fetchMonitorModelOptions(selectedProject),
+    queryKey: [...MONITOR_QUERY_KEY, 'models', selectedProject?.key || ''],
+    retry: false,
+    staleTime: 120_000
+  })
+  const catalog = useMemo(() => normalizeMonitorModelOptions(modelQuery.data), [modelQuery.data])
+  const selectedModelKey = catalog.choices.some(choice => choice.key === modelKey) ? modelKey : catalog.defaultChoiceKey
+
+  useEffect(() => {
+    if (!open) return
+    setGatewayKey(current => (gatewayChoices.some(choice => choice.key === current) ? current : selectedGatewayKey))
+  }, [gatewayChoices, open, selectedGatewayKey])
+
+  useEffect(() => {
+    if (!open) return
+    const nextKey = selectedProject?.key || ''
+    setProjectKey(current => (gatewayProjects.some(project => project.key === current) ? current : nextKey))
+  }, [gatewayProjects, open, selectedProject?.key])
+
+  useEffect(() => {
+    if (!open) return
+    setModelKey(current => (catalog.choices.some(choice => choice.key === current) ? current : catalog.defaultChoiceKey))
+  }, [catalog, open])
+
+  useEffect(() => {
+    if (open) return
+    setPrompt('')
+    setImages([])
+    setSubmitting(false)
+    setModelKey('')
+  }, [open])
+
+  const model = monitorModelChoiceFromKey(selectedModelKey)
+  const canSubmit = Boolean(open && selectedProject && model && prompt.trim() && !submitting && !modelQuery.isLoading && !modelQuery.error)
+
+  const addImages = async event => {
+    const files = [...(event.target.files || [])]
+    event.target.value = ''
+    if (!files.length) return
+    try {
+      const next = await Promise.all(files.map(readMonitorImageFile))
+      setImages(current => [...current, ...next])
+    } catch (error) {
+      host.notify({
+        kind: 'error',
+        message: error instanceof Error ? error.message : '图片读取失败。'
+      })
+    }
+  }
+
+  const submit = async () => {
+    if (!canSubmit || !model) return
+    setSubmitting(true)
+    try {
+      await createMonitorSession({
+        images,
+        model,
+        project: selectedProject,
+        prompt
+      })
+      onOpenChange(false)
+      onCreated?.()
+      host.notify({ kind: 'success', message: '会话已创建。' })
+    } catch {
+      host.notify({ kind: 'error', message: '无法在监控室新建会话。' })
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return jsx(Dialog, {
+    onOpenChange: next => {
+      if (submitting) return
+      onOpenChange(next)
+    },
+    open,
+    children: jsxs(DialogContent, {
+      className: 'max-w-lg',
+      children: [
+        jsx(DialogHeader, { children: jsx(DialogTitle, { children: '新建会话' }) }, 'header'),
+        jsxs('div', {
+          className: 'codex-monitor-new-field',
+          children: [
+            jsx('span', { className: 'codex-monitor-new-label', children: '网关' }, 'label'),
+            gatewayChoices.length
+              ? jsxs(Select, {
+                  disabled: submitting,
+                  onValueChange: setGatewayKey,
+                  value: selectedGatewayKey,
+                  children: [
+                    jsx(SelectTrigger, { className: 'w-full', children: jsx(SelectValue, { placeholder: '选择网关' }) }, 'trigger'),
+                    jsx(SelectContent, {
+                      children: gatewayChoices.map(choice => jsx(SelectItem, { value: choice.key, children: choice.label }, choice.key))
+                    }, 'content')
+                  ]
+                }, 'select')
+              : jsx('span', { className: 'text-[0.7rem] text-(--ui-text-quaternary)', children: '暂无可用网关' }, 'empty')
+          ]
+        }, 'gateway'),
+        jsxs('div', {
+          className: 'codex-monitor-new-field',
+          children: [
+            jsx('span', { className: 'codex-monitor-new-label', children: '项目' }, 'label'),
+            gatewayProjects.length
+              ? jsxs(Select, {
+                  disabled: submitting,
+                  onValueChange: setProjectKey,
+                  value: selectedProject?.key || '',
+                  children: [
+                    jsx(SelectTrigger, { className: 'w-full', children: jsx(SelectValue, { placeholder: '选择项目' }) }, 'trigger'),
+                    jsx(SelectContent, {
+                      children: gatewayProjects.map(project => jsx(SelectItem, { value: project.key, children: projectDisplayLabel(project) }, project.key))
+                    }, 'content')
+                  ]
+                }, 'select')
+              : jsx('span', { className: 'text-[0.7rem] text-(--ui-text-quaternary)', children: '该网关没有项目' }, 'empty')
+          ]
+        }, 'project'),
+        jsxs('div', {
+          className: 'codex-monitor-new-field',
+          children: [
+            jsx('span', { className: 'codex-monitor-new-label', children: '模型' }, 'label'),
+            modelQuery.isLoading
+              ? jsxs('div', {
+                  className: 'flex h-8 items-center gap-2 text-[0.7rem] text-(--ui-text-quaternary)',
+                  children: [
+                    jsx(GlyphSpinner, { ariaLabel: '正在加载默认模型', className: 'text-xs' }, 'spinner'),
+                    jsx('span', { children: '正在预加载默认模型…' }, 'copy')
+                  ]
+                }, 'loading')
+              : modelQuery.error
+                ? jsxs('div', {
+                    className: 'flex items-center gap-2 text-[0.7rem] text-(--ui-text-quaternary)',
+                    children: [
+                      jsx('span', { children: '无法读取该网关的模型列表' }, 'copy'),
+                      jsx(Button, { onClick: () => void modelQuery.refetch(), size: 'xs', variant: 'ghost', children: '重试' }, 'retry')
+                    ]
+                  }, 'error')
+                : catalog.choices.length
+                  ? jsxs(Select, {
+                      disabled: submitting,
+                      onValueChange: setModelKey,
+                      value: selectedModelKey,
+                      children: [
+                        jsx(SelectTrigger, { className: 'w-full', children: jsx(SelectValue, { placeholder: '选择模型' }) }, 'trigger'),
+                        jsx(SelectContent, {
+                          children: catalog.choices.map(choice => jsx(SelectItem, { value: choice.key, children: choice.label }, choice.key))
+                        }, 'content')
+                      ]
+                    }, 'select')
+                  : jsx('span', { className: 'text-[0.7rem] text-(--ui-text-quaternary)', children: '当前网关没有可用模型' }, 'empty')
+          ]
+        }, 'model'),
+        jsxs('div', {
+          className: 'codex-monitor-new-field',
+          children: [
+            jsx('span', { className: 'codex-monitor-new-label', children: '首条指令' }, 'label'),
+            jsx(Textarea, {
+              disabled: submitting,
+              onChange: event => setPrompt(event.target.value),
+              onKeyDown: event => {
+                if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                  event.preventDefault()
+                  void submit()
+                }
+              },
+              placeholder: '输入第一条指令…',
+              rows: 4,
+              value: prompt
+            }, 'input')
+          ]
+        }, 'prompt'),
+        jsxs('div', {
+          className: 'codex-monitor-new-field',
+          children: [
+            jsx('span', { className: 'codex-monitor-new-label', children: '图片' }, 'label'),
+            jsxs('div', {
+              className: 'codex-monitor-new-images',
+              children: [
+                ...images.map(image => jsxs('span', {
+                  className: 'codex-monitor-new-thumb',
+                  title: image.name,
+                  children: [
+                    jsx('img', { alt: image.name, src: image.dataUrl }, 'preview'),
+                    jsx('button', {
+                      'aria-label': `移除 ${image.name}`,
+                      className: 'codex-monitor-new-thumb-remove',
+                      disabled: submitting,
+                      onClick: () => setImages(current => current.filter(item => item.id !== image.id)),
+                      type: 'button',
+                      children: jsx(Codicon, { name: 'close', size: '0.65rem' })
+                    }, 'remove')
+                  ]
+                }, image.id)),
+                jsx('input', {
+                  accept: MONITOR_IMAGE_ACCEPT,
+                  className: 'hidden',
+                  disabled: submitting,
+                  multiple: true,
+                  onChange: event => { void addImages(event) },
+                  ref: fileRef,
+                  type: 'file'
+                }, 'file'),
+                jsxs(Button, {
+                  disabled: submitting,
+                  onClick: () => fileRef.current?.click(),
+                  size: 'xs',
+                  type: 'button',
+                  variant: 'outline',
+                  children: [
+                    jsx(Codicon, { name: 'add', size: '0.75rem' }, 'icon'),
+                    jsx('span', { children: '添加图片' }, 'label')
+                  ]
+                }, 'add')
+              ]
+            }, 'list')
+          ]
+        }, 'images'),
+        jsxs(DialogFooter, {
+          children: [
+            jsx(Button, { disabled: submitting, onClick: () => onOpenChange(false), variant: 'ghost', children: '取消' }, 'cancel'),
+            jsx(Button, { disabled: !canSubmit, onClick: () => void submit(), children: submitting ? '正在创建…' : '创建并发送' }, 'submit')
+          ]
+        }, 'footer')
+      ]
+    })
+  })
+}
+
+function SessionMonitorPage() {
+  const queryClient = useQueryClient()
+  const { prefs, sessionsQuery } = useGatewaySessionsQuery(PROFILE_SCOPE_ALL)
+  const sourceGroups = sessionsQuery.data?.groups || []
+  const projects = useMemo(
+    () => sourceGroups
+      .filter(group => !group.error)
+      .flatMap(group => projectGroupsForGatewayGroup(group, prefs.hideScheduled)),
+    [prefs.hideScheduled, sourceGroups]
+  )
+  const candidates = useMemo(() => monitorSessionCandidates(projects), [projects])
+  const candidateByKey = useMemo(() => new Map(candidates.map(entry => [entry.key, entry])), [candidates])
+  const [slotKeys, setSlotKeys] = useState(() => Array(MONITOR_SESSION_LIMIT).fill(''))
+  const [createOpen, setCreateOpen] = useState(false)
+  const renderedSlotKeys = stabilizeMonitorSlotKeys(slotKeys, candidates, MONITOR_SESSION_LIMIT)
+  const slots = renderedSlotKeys.map(key => candidateByKey.get(key) || null)
+  const occupiedCount = slots.filter(Boolean).length
+
+  useEffect(() => {
+    setSlotKeys(current => {
+      const next = stabilizeMonitorSlotKeys(current, candidates, MONITOR_SESSION_LIMIT)
+      return next.length === current.length && next.every((key, index) => key === current[index]) ? current : next
+    })
+  }, [candidates])
+
+  const failedSources = sourceGroups.filter(group => group.error).length
+  const refresh = () => {
+    void sessionsQuery.refetch()
+    void queryClient.invalidateQueries({ queryKey: MONITOR_QUERY_KEY })
+  }
+
+  return jsxs('div', {
+    className: 'flex h-full min-h-0 flex-col bg-white p-3 text-foreground',
+    'data-slot': 'codex-session-monitor',
+    children: [
+      jsxs('header', {
+        className: 'mb-3 flex h-10 shrink-0 items-center gap-3 px-1',
+        children: [
+          jsx('span', {
+            className: 'flex size-8 items-center justify-center rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-bg-elevated)',
+            children: jsx(Codicon, { name: 'layout', size: '0.95rem' })
+          }, 'icon'),
+          jsxs('div', {
+            className: 'min-w-0 flex-1',
+            children: [
+              jsx('h1', { className: 'text-sm font-semibold tracking-tight', children: '多会话监控室' }, 'title'),
+              jsx('p', { className: 'text-[0.65rem] text-(--ui-text-tertiary)', children: '固定 4 个卡座，新的活跃会话自动补入空位' }, 'description')
+            ]
+          }, 'copy'),
+          failedSources ? jsx('span', { className: 'text-[0.65rem] text-(--ui-text-quaternary)', title: '部分会话来源当前不可用', children: `${failedSources} 个来源不可用` }, 'failed') : null,
+          jsx('span', { className: 'rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-elevated) px-2 py-1 text-[0.65rem] tabular-nums', children: `${occupiedCount} / ${MONITOR_SESSION_LIMIT}` }, 'count'),
+          jsx(Button, {
+            'aria-label': '在监控室新建会话',
+            className: 'size-8',
+            onClick: () => setCreateOpen(true),
+            size: 'icon-xs',
+            title: '新建会话',
+            variant: 'ghost',
+            children: jsx(Codicon, { name: 'add', size: '0.85rem' })
+          }, 'create'),
+          jsx(Button, {
+            'aria-label': '刷新多会话看板',
+            className: 'size-8',
+            onClick: refresh,
+            size: 'icon-xs',
+            title: '刷新',
+            variant: 'ghost',
+            children: jsx(Codicon, { name: 'refresh', size: '0.85rem', spinning: sessionsQuery.isFetching })
+          }, 'refresh')
+        ]
+      }, 'header'),
+      sessionsQuery.isLoading && sourceGroups.length === 0
+        ? jsx('div', {
+            className: 'flex min-h-0 flex-1 items-center justify-center gap-2 text-(--ui-text-tertiary)',
+            children: [
+              jsx(GlyphSpinner, { ariaLabel: '正在加载活跃会话' }, 'spinner'),
+              jsx('span', { children: '正在加载活跃会话…' }, 'label')
+            ]
+          }, 'loading')
+        : sessionsQuery.error && sourceGroups.length === 0
+          ? jsx(ErrorState, { className: 'min-h-0 flex-1', description: '暂时无法读取跨网关会话。', title: '监控室不可用', children: jsx(Button, { onClick: refresh, size: 'xs', variant: 'ghost', children: '重试' }) }, 'error')
+          : jsx('main', {
+              className: 'codex-monitor-grid',
+              'data-seat-count': String(MONITOR_SESSION_LIMIT),
+              children: slots.map((entry, index) => entry
+                ? jsx(MonitorSessionCard, {
+                    appearance: prefs.projectAppearance || {},
+                    entry,
+                    slotIndex: index
+                  }, `monitor-slot:${index}`)
+                : jsx(MonitorEmptySlot, { index }, `monitor-slot:${index}`))
+            }, 'grid'),
+      jsx(MonitorNewSessionDialog, {
+        onCreated: refresh,
+        onOpenChange: setCreateOpen,
+        open: createOpen,
+        projects,
+        sourceGroups
+      }, 'create-dialog')
+    ]
+  })
+}
+
 function GatewaySessionsPane() {
   const queryClient = useQueryClient()
   const { prefs, profileScope, sessionLimit, sessionsQuery, sessionsQueryKey } = useGatewaySessionsQuery()
@@ -2636,6 +3671,7 @@ function GatewaySessionsPane() {
   const projectDataRevision = useValue($gatewayProjectDataRevision)
   const projectOrderKeysRef = useRef([])
   const sessionOrderIdsRef = useRef(new Map())
+  const pendingNewChatRef = useRef(null)
   const lastProjectSortEpochRef = useRef(-1)
   const previousBusyRef = useRef(false)
   const previousFocusedSessionIdRef = useRef(null)
@@ -2778,10 +3814,12 @@ function GatewaySessionsPane() {
   const projects = useMemo(() => {
     const known = new Set(unfilteredProjects.map(project => project.key))
     const previousKeys = projectOrderKeysRef.current.filter(key => known.has(key))
-    const resort = lastProjectSortEpochRef.current !== projectSortEpoch || previousKeys.length === 0
+    const pendingNewChatReady = pendingNewChatAppeared(pendingNewChatRef.current, unfilteredProjects)
+    const resort = lastProjectSortEpochRef.current !== projectSortEpoch || previousKeys.length === 0 || pendingNewChatReady
     const orderedAll = stabilizeProjectOrder(unfilteredProjects, previousKeys, { resort })
     lastProjectSortEpochRef.current = projectSortEpoch
     projectOrderKeysRef.current = orderedAll.map(project => project.key)
+    if (pendingNewChatReady) pendingNewChatRef.current = null
 
     // Freeze each project's session order against the same epoch, so a live
     // last_active tick inside a project no longer reshuffles its rows either.
@@ -3007,6 +4045,7 @@ function GatewaySessionsPane() {
       if (!stored) {
         throw new Error('The gateway did not return a session id.')
       }
+      pendingNewChatRef.current = { projectKey: project.key, sessionId: stored }
 
       const opening = host.openSession(stored, {
         intent: 'in-place',
@@ -3034,7 +4073,6 @@ function GatewaySessionsPane() {
       setProjectLoads(new Map())
       setRevealedProjects(new Set())
       void queryClient.refetchQueries({ queryKey: sessionsQueryKey, type: 'active' })
-      setProjectSortEpoch(current => current + 1)
     } catch {
       host.notify({
         kind: 'error',
@@ -3141,7 +4179,7 @@ function GatewaySessionsPane() {
       children: jsxs(ErrorState, {
         className: 'max-w-xs',
         description: '暂时无法读取网关会话。',
-        title: 'Codex Studio',
+        title: 'Overlook',
         children: jsx(Button, { onClick: refresh, size: 'xs', variant: 'ghost', children: '重试' }, 'retry')
       })
     })
@@ -3151,9 +4189,9 @@ function GatewaySessionsPane() {
     className: 'flex h-full min-h-0 flex-col bg-(--ui-sidebar-surface-background) text-xs text-(--ui-text-tertiary)',
     children: [
       jsxs('header', {
+        'aria-label': '跨网关会话',
         className: 'flex shrink-0 items-center gap-1.5 border-b border-(--ui-stroke-tertiary) px-3 py-1.5',
         children: [
-          jsx('div', { className: 'min-w-0 flex-1 whitespace-nowrap font-medium text-foreground', children: 'Codex Studio' }, 'title'),
           jsx('span', {
             className: 'text-[0.65rem] tabular-nums text-(--ui-text-quaternary)',
             title: sourcesIncomplete ? `项目共 ${totalProjectSessionCount} 条；搜索已加载 ${loadedSessionCount} 条` : `共 ${totalProjectSessionCount} 条会话`,
@@ -3170,6 +4208,16 @@ function GatewaySessionsPane() {
               jsx('option', { value: PROFILE_SCOPE_ALL, children: '全部配置' }, PROFILE_SCOPE_ALL)
             ]
           }, 'profile-scope'),
+          jsx('span', { className: 'min-w-0 flex-1' }, 'spacer'),
+          jsx(Button, {
+            'aria-label': '打开多会话看板',
+            className: 'size-6',
+            onClick: openSessionMonitorWorkspace,
+            size: 'icon-xs',
+            title: '多会话监控室',
+            variant: 'ghost',
+            children: jsx(Codicon, { name: 'layout', size: '0.8rem' })
+          }, 'monitor'),
           jsx(Button, {
             'aria-label': hideScheduled ? '显示定时会话' : '隐藏定时会话',
             className: 'size-6',
@@ -3195,18 +4243,15 @@ function GatewaySessionsPane() {
           const activeFilter = sessionFilter === value
           return jsx(Button, {
             'aria-pressed': activeFilter,
-            className: 'rounded-lg',
+            className: 'codex-gateway-filter-tab rounded-lg',
             onClick: () => setSessionFilter(value),
             size: 'xs',
-            style: activeFilter
-              ? { background: '#ffffff', border: '1px solid #e9e2d6', boxShadow: '0 1px 2px rgba(120,104,80,0.06)' }
-              : undefined,
             title: value === 'open'
               ? '后端会话仍开放，不代表模型正在生成'
               : value === 'unread'
                 ? '未读依据同步状态，实时状态点可能先更新'
                 : undefined,
-            variant: activeFilter ? 'secondary' : 'ghost',
+            variant: 'ghost',
             children: label
           }, value)
         })
@@ -3338,8 +4383,8 @@ function createElementStyleOwner() {
 
 export default {
   id: ID,
-  name: 'Codex Studio',
-  description: 'Codex Studio：纯白主题、跨网关会话侧栏、命令面板和未读状态。',
+  name: 'Overlook',
+  description: 'Overlook：纯白主题、跨网关会话侧栏、命令面板和未读状态。',
   register(ctx) {
     gatewaySessionStorage = ctx.storage
     gatewaySessionStorageOwner = ctx
@@ -3349,7 +4394,14 @@ export default {
     ctx.register({
       id: 'theme',
       area: THEMES_AREA,
-      data: CODEX_THEME
+      data: OVERLOOK_THEME
+    })
+
+    ctx.register({
+      id: 'monitor-page',
+      area: ROUTES_AREA,
+      data: { path: MONITOR_ROUTE },
+      render: () => jsx(SessionMonitorPage, {})
     })
 
     // This is a real contributed pane, not DOM injected into Hermes's React
@@ -3359,7 +4411,7 @@ export default {
     ctx.register({
       id: 'gateway-sessions',
       area: 'panes',
-      title: 'Codex Studio',
+      title: 'Overlook',
       data: {
         collapsible: true,
         placement: 'left',
@@ -3377,13 +4429,25 @@ export default {
     })
 
     ctx.register({
+      id: 'monitor-palette',
+      area: PALETTE_AREA,
+      data: {
+        id: 'overlook.monitor',
+        action: 'overlook.monitor',
+        label: 'Overlook：打开多会话监控室',
+        keywords: ['overlook', 'monitor', 'sessions', '监控室', '多会话', '通览'],
+        run: openSessionMonitorWorkspace
+      }
+    })
+
+    ctx.register({
       id: 'refresh-palette',
       area: PALETTE_AREA,
       data: {
-        id: 'codex-studio.refresh',
-        action: 'codex-studio.refresh',
-        label: 'Codex Studio：刷新会话',
-        keywords: ['codex', 'studio', 'gateway', 'sessions', 'refresh', 'reload', '刷新', '会话', '网关'],
+        id: 'overlook.refresh',
+        action: 'overlook.refresh',
+        label: 'Overlook：刷新会话',
+        keywords: ['overlook', 'gateway', 'sessions', 'refresh', 'reload', '刷新', '会话', '网关', '通览'],
         run: () => void refreshGatewaySessionQueries()
       }
     })
@@ -3392,9 +4456,9 @@ export default {
       id: 'theme-palette',
       area: PALETTE_AREA,
       data: {
-        id: 'codex-studio.theme',
-        label: 'Codex Studio：应用 Hermes Cold White',
-        keywords: ['codex', 'studio', 'theme', 'cold', 'white', 'light', '主题', '纯白'],
+        id: 'overlook.theme',
+        label: 'Overlook：应用 Hermes Cold White',
+        keywords: ['overlook', 'theme', 'cold', 'white', 'light', '主题', '纯白', '通览'],
         run: () => {
           if (requestTheme(THEME_NAME)) {
             ctx.storage.set('theme-revision', THEME_REVISION)
@@ -3407,10 +4471,10 @@ export default {
       id: 'refresh-keybind',
       area: KEYBINDS_AREA,
       data: {
-        id: 'codex-studio.refresh',
+        id: 'overlook.refresh',
         category: 'view',
         defaults: ['mod+alt+g'],
-        label: 'Codex Studio：刷新会话',
+        label: 'Overlook：刷新会话',
         run: () => void refreshGatewaySessionQueries()
       }
     })
@@ -3498,7 +4562,7 @@ export default {
 
         document.querySelectorAll("[data-slot='aui_user-message-root'] .composer-human-message").forEach(element => {
           // Content-sized, right-aligned bubble: short prompts stay short and
-          // long prompts cap at the same ~70% proportion as Codex.
+          // long prompts cap at the same ~70% proportion as the native composer.
           elementStyles.set(element, 'width', 'fit-content')
           elementStyles.set(element, 'max-width', USER_MESSAGE_MAX_WIDTH)
           elementStyles.set(element, 'margin-left', 'auto')
@@ -3510,7 +4574,7 @@ export default {
       }
 
       // Remove inline values from elements that disappeared or are no longer
-      // part of the active Codex-light surface. Some layout cells we align
+      // part of the active Cold White surface. Some layout cells we align
       // (menu/input/control descendants) are intentionally not data-slot roots,
       // so keep connected descendants while their owning public surface exists.
       for (const [element, values] of elementStyles.touched) {
@@ -3594,6 +4658,9 @@ export default {
     domObserver?.observe(root, { childList: true, subtree: true })
 
     ctx.onDispose(() => {
+      const closeMonitor = monitorWorkspaceClose
+      monitorWorkspaceClose = null
+      try { closeMonitor?.() } catch {}
       observer?.disconnect()
       domObserver?.disconnect()
       if (syncFrame && typeof window !== 'undefined') {

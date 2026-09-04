@@ -109,4 +109,4 @@ const collapsedPinned = context.api.gatewayRenderRows([projectA, projectB], new 
 assert.equal(collapsedPinned.some(row => row.type === 'pinned-header'), true, 'pinned header still shows when collapsed')
 assert.equal(collapsedPinned.some(row => row.type === 'pinned-session'), false, 'pinned rows hide when the section is collapsed')
 
-console.log('codex-studio pinned section contract passed')
+console.log('overlook pinned section contract passed')

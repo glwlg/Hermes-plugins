@@ -25,7 +25,7 @@ function extractFunction(name) {
 assert.match(source, /const PROJECT_SESSION_PREVIEW_LIMIT = 5/, 'preview must default to five sessions')
 assert.match(source, /type: 'more'/, 'extra sessions must collapse behind a load-more row')
 assert.match(source, /type: 'collapse'/, 'revealed projects must keep a collapse row under the extra sessions')
-assert.match(source, /展开显示/, 'load-more control must match the Codex expand label')
+assert.match(source, /展开显示/, 'load-more control must match the native expand label')
 assert.doesNotMatch(source, /: ' 更多'/, 'expand must not advertise leftover gateway pages as 更多')
 assert.match(source, /收起/, 'revealed projects must expose a collapse control')
 assert.match(source, /function gatewayProjectToggleRow\(/, 'expand and collapse must share one text-aligned row')
@@ -314,11 +314,11 @@ const variableRows = [
   { type: 'more' },
   { type: 'session' }
 ]
-assert.deepEqual(variableRows.map(variableContext.api.gatewayRowHeight), [32, 32, 28, 28, 32])
+assert.deepEqual(variableRows.map(variableContext.api.gatewayRowHeight), [36, 36, 28, 28, 36])
 assert.deepEqual(
   JSON.parse(JSON.stringify(variableContext.api.gatewayVirtualWindow(variableRows, 64, 30))),
-  { bottom: 32, end: 4, start: 2, top: 64 }
+  { bottom: 64, end: 3, start: 1, top: 36 }
 )
 assert.match(source, /gatewayVirtualWindow\(renderRows, scrollTop, viewportHeight\)/, 'virtualization must receive row types, not only a count')
 
-console.log('codex-studio project recency preview contract passed')
+console.log('overlook project recency preview contract passed')

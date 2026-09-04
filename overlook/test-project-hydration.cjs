@@ -144,4 +144,4 @@ assert.deepEqual(
 )
 assert.match(source, /setProjectLoads\(current =>/, 'session mutations must patch the expanded project cache')
 
-console.log('codex-studio project hydration contract passed')
+console.log('overlook project hydration contract passed')

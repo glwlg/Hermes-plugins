@@ -34,11 +34,12 @@ assert.doesNotMatch(source, /}, 'filter-scope'\)/, 'the verbose loaded/total sen
 assert.match(source, /sourcesIncomplete && \(search\.trim\(\) \|\| sessionFilter !== 'all'\)/, 'partial-search scope appears only when relevant')
 assert.match(source, /filter\(project => project\.sessions\.length > 0 \|\| !filtering\)/, 'active filters must hide empty project shells')
 assert.match(source, /children: totalProjectSessionCount/, 'header must show the project-tree total, not a duplicate loaded ratio')
+assert.doesNotMatch(source, /children: 'Overlook'/, 'the sidebar header must not paint a nowrap Overlook label over the scope control')
 assert.doesNotMatch(source, /children: hasExactSessionTotal && totalSessionCount > loadedSessionCount \? `\$\{loadedSessionCount\}\/\$\{totalSessionCount\}`/)
 
 assert.match(source, /const rowClassName = `codex-gateway-session-row group relative h-8/, 'session rows must use compact single-line height')
 assert.doesNotMatch(source, /children: session\.preview \|\| `\$\{session\.message_count \|\| 0\} messages`/, 'the permanent second preview line must be removed')
-assert.match(source, /boxShadow: active \? 'inset 0 0 0 1px var\(--ui-stroke-secondary\)'/, 'the selected session needs a persistent outline without a new icon')
+assert.match(source, /boxShadow: active \? 'inset 0 0 0 1px var\(--ui-stroke-secondary\)/, 'the selected session keeps a persistent outline without a new icon')
 assert.match(source, /font-semibold text-foreground/, 'the selected session title needs stronger weight')
 assert.match(source, /children: Math\.max\(project\.sessions\.length, Number\(project\.sessionCount\) \|\| 0\)/, 'project headers must show authoritative totals')
 assert.doesNotMatch(source, /children: 'auto'/, 'automatic project metadata belongs in a tooltip, not a permanent badge')
@@ -55,4 +56,4 @@ assert.equal(badgeContext.api.projectSourceBadge({ profile: 'coder', sourceLabel
 assert.equal(badgeContext.api.projectSourceBadge({ profile: 'default', sourceLabel: 'WSL', remoteLabel: 'ubuntu', route: { mode: 'remote' } }), 'WSL')
 assert.equal(badgeContext.api.projectSourceBadge({ profile: 'coder', sourceLabel: 'WSL', remoteLabel: 'ubuntu', route: { mode: 'remote' } }), 'WSL · coder')
 
-console.log('codex-studio sidebar polish contract passed')
+console.log('overlook sidebar polish contract passed')

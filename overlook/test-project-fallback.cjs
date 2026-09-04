@@ -145,7 +145,7 @@ async function main() {
     assert.equal(failed.partial, false, 'errored groups are excluded from partial (they are reported as failed)')
   }
 
-  console.log('codex-studio project fallback + partial summary contract passed')
+  console.log('overlook project fallback + partial summary contract passed')
 }
 
 main().catch(error => {

@@ -5,7 +5,7 @@ const assert = require('assert/strict')
 const pluginPath = path.join(__dirname, 'plugin.js')
 const source = fs.readFileSync(pluginPath, 'utf8')
 
-assert.match(source, /const THEME_REVISION = 17/, 'conversation canvas change must bump the theme revision so existing installs reapply')
+assert.match(source, /const THEME_REVISION = 18/, 'visual hierarchy changes must bump the theme revision so existing installs reapply')
 assert.match(source, /label: 'Hermes Cold White'/)
 assert.match(source, /const THEME_NAME = 'hermes-cold-white'/)
 
@@ -50,15 +50,15 @@ for (const token of icyChrome) {
 }
 
 const paperChrome = [
-  "sidebarBackground: '#f8f8fa'",
+  "sidebarBackground: '#fbfbfe'",
   "'--dt-sidebar-bg': '#f5f5f7'",
-  "'--ui-bg-sidebar': '#f8f8fa'",
-  "'--ui-sidebar-surface-background': '#f8f8fa'",
+  "'--ui-bg-sidebar': '#fbfbfe'",
+  "'--ui-sidebar-surface-background': '#fbfbfe'",
   "muted: '#f5f5f7'",
   "secondary: '#f5f5f7'",
   "accent: '#ebebed'",
   "'--ui-bg-chrome': '#f5f5f7'",
-  "'--ui-surface-background': '#f8f8fa'",
+  "'--ui-surface-background': '#fbfbfe'",
   "'--ui-inline-code-background': '#ececee'",
   "'--ui-control-hover-background': '#ececee'",
   "'--ui-row-hover-background': '#ececee'",
@@ -76,4 +76,4 @@ assert.match(source, /纸灰工作台，环绕纯白对话区/, 'description mus
 assert.doesNotMatch(source, /blue-gray structure/)
 assert.doesNotMatch(source, /paper rails around a cold-white conversation/)
 
-console.log('codex-studio chrome palette contract passed')
+console.log('overlook chrome palette contract passed')

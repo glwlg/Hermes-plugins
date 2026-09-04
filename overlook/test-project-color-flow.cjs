@@ -19,11 +19,15 @@ assert.match(source, /'--codex-project-color': projectColor \|\| undefined/, 'se
 assert.match(source, /appearance: projectAppearance, indent: false, pinned: true/, 'pinned session rows receive the appearance map')
 assert.match(source, /appearance: projectAppearance \}\)/, 'regular session rows receive the appearance map')
 
-// The left guide rail uses the project color with the creamy fallback.
-assert.match(source, /box-shadow:inset 1px 0 0 var\(--codex-project-color, #ece5d8\)/, 'session guide rail uses the project color')
+// The static left guide rail uses a restrained project tint with the creamy
+// fallback, leaving the full project color to the running arc.
+assert.match(source, /box-shadow:inset 1px 0 0 color-mix\(in srgb,var\(--codex-project-color, #ece5d8\) 30%,#ece5d8\)/, 'session guide rail uses a restrained project tint')
 
-// The running border uses the project color instead of fixed dark tones.
-assert.match(source, /conic-gradient\(from var\(--codex-gateway-arc-angle,0deg\),transparent 0deg,transparent 258deg,var\(--codex-project-color, #1f2937\) 286deg/, 'running border leading stop uses the project color')
-assert.doesNotMatch(source, /258deg,#1f2937 286deg,#64748b 326deg/, 'running border no longer hardcodes dark slate')
+// The running border reuses the native Sessions arc and only mirrors its
+// travel horizontally. Its native color ramp is fed by the project color.
+assert.match(source, /className: 'arc-border arc-row codex-gateway-running-arc'/, 'session rows render the native Sessions arc')
+assert.match(source, /\.codex-gateway-running-arc\{display:none;--arc-c1:var\(--codex-project-color, #1f2937\);--arc-duration:3s;--arc-radius:0\.75rem;transform:scaleX\(-1\)\}/, 'native arc is project-colored, slowed, radius-matched, and mirrored')
+assert.match(source, /\.codex-gateway-session-row:has\(\[class~="bg-\(--ui-accent\)"\]\)>\.codex-gateway-running-arc,\.codex-gateway-session-row:has\(\[class~="border-\(--ui-accent\)"\]\)>\.codex-gateway-running-arc\{display:block\}/, 'native arc only appears for a running row')
+assert.doesNotMatch(source, /--codex-gateway-arc-angle|codex-gateway-running-border|conic-gradient\(from var\(--codex-gateway-arc-angle/, 'the old plugin conic spinner is removed')
 
-console.log('codex-studio project color flow contract passed')
+console.log('overlook project color flow contract passed')

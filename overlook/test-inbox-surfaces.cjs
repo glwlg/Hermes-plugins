@@ -22,9 +22,9 @@ function extractFunction(name) {
   throw new Error(`unterminated function ${name}`)
 }
 
-assert.match(source, /PALETTE_AREA/, 'Codex Studio must register command-palette rows')
-assert.match(source, /STATUSBAR_AREAS/, 'Codex Studio must register a status-bar inbox chip')
-assert.match(source, /KEYBINDS_AREA/, 'Codex Studio must register a rebindable refresh keybind')
+assert.match(source, /PALETTE_AREA/, 'Overlook must register command-palette rows')
+assert.match(source, /STATUSBAR_AREAS/, 'Overlook must register a status-bar inbox chip')
+assert.match(source, /KEYBINDS_AREA/, 'Overlook must register a rebindable refresh keybind')
 assert.match(source, /EmptyState/, 'empty pane states must use the SDK empty surface')
 assert.match(source, /ErrorState/, 'failed pane states must use the SDK error surface')
 assert.match(source, /function gatewayInboxSummary\(/, 'inbox counts must be a pure helper')
@@ -74,4 +74,4 @@ assert.deepEqual(JSON.parse(JSON.stringify(summary)), {
   unread: 1
 })
 
-console.log('codex-studio inbox surfaces contract passed')
+console.log('overlook inbox surfaces contract passed')

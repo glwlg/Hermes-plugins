@@ -100,4 +100,4 @@ assert.equal(renamed[0].projectTree.projects[0].previewSessions[0].title, 'Êñ∞Âê
 const applyBlock = source.slice(source.indexOf('const applySessionChange'))
 assert.match(applyBlock, /clearGatewayProjectTreeCache\(\)/, 'delete must invalidate the project tree cache before refetch')
 
-console.log('codex-studio session delete consistency contract passed')
+console.log('overlook session delete consistency contract passed')

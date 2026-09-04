@@ -77,4 +77,4 @@ assert.ok(colorKeys.length >= 8, `expected at least 8 color presets, saw ${color
 assert.match(source, /projectAppearance: \{/, 'appearance writes go through prefs')
 assert.match(source, /onEditAppearance|editAppearance|appearanceEditor/, 'an appearance editor entry point exists')
 
-console.log('codex-studio project appearance contract passed')
+console.log('overlook project appearance contract passed')
