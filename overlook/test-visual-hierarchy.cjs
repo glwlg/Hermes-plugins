@@ -2,7 +2,7 @@ const fs = require('fs')
 const path = require('path')
 const assert = require('assert/strict')
 
-const source = fs.readFileSync(path.join(__dirname, 'plugin.js'), 'utf8')
+const source = fs.readFileSync(path.join(__dirname, 'desktop', 'plugin.js'), 'utf8')
 
 // Static project ownership stays quiet; the native running arc keeps the full
 // project color through --arc-c1.

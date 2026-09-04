@@ -2,30 +2,35 @@
 
 Local Hermes Desktop plugins for this machine.
 
-Each plugin lives in a folder named after its stable `id`, with a
-`plugin.js` at the root. Hermes loads the same file from
-`$HERMES_HOME/desktop-plugins/<id>/plugin.js`.
+Each plugin lives in a folder named after its stable `id`. The install payload
+is `<id>/desktop/plugin.js`, so Hermes copies only that file into
+`$HERMES_HOME/desktop-plugins/<id>/plugin.js`. Tests stay beside `desktop/`
+and are not installed.
 
 ## Install Overlook
 
-This repo holds more than one plugin, so the [install link](https://hermes-agent.nousresearch.com/docs/zh-Hans/developer-guide/desktop-plugin-sdk#install-link)
-must include the plugin folder. Clicking it opens Hermes Desktop and a
-confirmation dialog — deep links never auto-install. GitHub may strip the
-custom scheme; copy the URL below or paste the identifier into Settings.
+GitHub will not render a `hermes://` URL as a clickable link. Use the HTTPS
+jump page instead; it opens Hermes Desktop. Deep links never auto-install —
+you still get a confirmation dialog.
 
-[Install Overlook in Hermes](hermes://plugin/install?repo=glwlg/Hermes-plugins/overlook)
+**[Install Overlook](https://raw.githack.com/glwlg/Hermes-plugins/main/install/overlook.html)**
+ ·
+**[Replace the current copy](https://raw.githack.com/glwlg/Hermes-plugins/main/install/overlook.html?force=1)**
+
+If the jump page cannot open the app, paste this into the browser address bar
+while Hermes Desktop is installed:
 
 ```
 hermes://plugin/install?repo=glwlg/Hermes-plugins/overlook
 ```
 
-Already installed? Replace it:
+Replace an existing copy:
 
 ```
 hermes://plugin/install?repo=glwlg/Hermes-plugins/overlook&force=1
 ```
 
-Or paste `glwlg/Hermes-plugins/overlook` into **Settings → Plugins → Install from Git**.
+See the [Desktop Plugin SDK install-link section](https://hermes-agent.nousresearch.com/docs/zh-Hans/developer-guide/desktop-plugin-sdk#install-link).
 
 Dev builds of Hermes use `hermes-dev://` instead of `hermes://`. Open the
 desktop app once if the scheme is not registered yet.
@@ -45,7 +50,7 @@ Overlook is desktop-only.
 - **Sidebar:** projects with sessions first; order pins after first paint and re-ranks on your send or a manual refresh
 - **Preview:** five sessions per project, then 展开显示
 
-Source: `overlook/plugin.js`.
+Source: `overlook/desktop/plugin.js`.
 
 Gateway session data stays on the Desktop SDK (`host.profileRoutes`,
 `host.listPersistedSessions`, `host.onEvent`). This plugin does **not** ship a

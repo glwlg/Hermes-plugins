@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Install Overlook</title>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font: 16px/1.5 system-ui, sans-serif;
+      color: #111;
+      display: grid;
+      place-items: center;
+      padding: 32px;
+    }
+    main { max-width: 36rem; }
+    a.btn {
+      display: inline-block;
+      margin: 12px 12px 0 0;
+      padding: 10px 16px;
+      border-radius: 8px;
+      background: #111;
+      color: #fff;
+      text-decoration: none;
+    }
+    a.secondary { background: #eee; color: #111; }
+    code { font-size: 13px; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Overlook</h1>
+    <p>即将打开 Hermes Desktop 的安装确认框。若没有弹出，点下面的按钮，并允许浏览器打开 Hermes。</p>
+    <p>
+      <a class="btn" id="install" href="hermes://plugin/install?repo=glwlg/Hermes-plugins/overlook">安装 Overlook</a>
+      <a class="btn secondary" id="replace" href="hermes://plugin/install?repo=glwlg/Hermes-plugins/overlook&amp;force=1">覆盖已有安装</a>
+    </p>
+    <p>也可以把下面的地址贴进浏览器地址栏：</p>
+    <p><code id="url">hermes://plugin/install?repo=glwlg/Hermes-plugins/overlook</code></p>
+  </main>
+  <script>
+    const force = new URLSearchParams(location.search).has('force')
+    const url = 'hermes://plugin/install?repo=glwlg/Hermes-plugins/overlook' + (force ? '&force=1' : '')
+    document.getElementById('url').textContent = url
+    document.getElementById('install').href = url
+    location.replace(url)
+  </script>
+</body>
+</html>

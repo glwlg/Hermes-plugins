@@ -2,7 +2,7 @@ const fs = require('fs')
 const path = require('path')
 const assert = require('assert/strict')
 
-const source = fs.readFileSync(path.join(__dirname, 'plugin.js'), 'utf8')
+const source = fs.readFileSync(path.join(__dirname, 'desktop', 'plugin.js'), 'utf8')
 
 // --- home project is customizable --------------------------------------------
 

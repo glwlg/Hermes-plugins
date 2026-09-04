@@ -3,7 +3,7 @@ const path = require('path')
 const vm = require('vm')
 const assert = require('assert/strict')
 
-const pluginPath = path.join(__dirname, 'plugin.js')
+const pluginPath = path.join(__dirname, 'desktop', 'plugin.js')
 const source = fs.readFileSync(pluginPath, 'utf8')
 
 function extractFunction(name) {

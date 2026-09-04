@@ -3,7 +3,7 @@ const path = require('path')
 const vm = require('vm')
 const assert = require('assert/strict')
 
-const source = fs.readFileSync(path.join(__dirname, 'plugin.js'), 'utf8')
+const source = fs.readFileSync(path.join(__dirname, 'desktop', 'plugin.js'), 'utf8')
 
 function extractConst(name) {
   const marker = `const ${name} = `

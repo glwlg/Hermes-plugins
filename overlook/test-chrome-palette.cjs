@@ -2,7 +2,7 @@ const fs = require('fs')
 const path = require('path')
 const assert = require('assert/strict')
 
-const pluginPath = path.join(__dirname, 'plugin.js')
+const pluginPath = path.join(__dirname, 'desktop', 'plugin.js')
 const source = fs.readFileSync(pluginPath, 'utf8')
 
 assert.match(source, /const THEME_REVISION = 18/, 'visual hierarchy changes must bump the theme revision so existing installs reapply')
