@@ -59,7 +59,10 @@ const context = {
         }
       }
       if (method === 'session.create') return { session_id: 'runtime-1', stored_session_id: 'stored-1' }
+      if (method === 'session.resume') return { session_id: 'runtime-resumed' }
       if (method === 'image.attach_bytes') return { attached: true, path: `/images/${params.filename}` }
+      if (method === 'config.set') return { ok: true, key: params.key, value: params.value }
+      if (method === 'session.interrupt') return { ok: true, status: 'interrupted' }
       if (method === 'prompt.submit') return { ok: true }
       if (method === 'session.close') return { ok: true }
       throw new Error(`unexpected method ${method}`)
@@ -87,8 +90,12 @@ vm.runInContext(
     'fetchMonitorModelOptions',
     'monitorSessionCreateParams',
     'monitorImageAttachPayload',
-    'createMonitorSession'
-  ].map(extractFunction).join('\n')}\nglobalThis.api = { monitorModelChoiceKey, monitorModelChoiceFromKey, normalizeMonitorModelOptions, fetchMonitorModelOptions, monitorSessionCreateParams, monitorImageAttachPayload, createMonitorSession }`,
+    'createMonitorSession',
+    'resolveMonitorRuntimeSessionId',
+    'switchMonitorSessionModel',
+    'stopMonitorSessionTask',
+    'submitMonitorPrompt'
+  ].map(extractFunction).join('\n')}\nglobalThis.api = { monitorModelChoiceKey, monitorModelChoiceFromKey, normalizeMonitorModelOptions, fetchMonitorModelOptions, monitorSessionCreateParams, monitorImageAttachPayload, createMonitorSession, resolveMonitorRuntimeSessionId, switchMonitorSessionModel, stopMonitorSessionTask, submitMonitorPrompt }`,
   context
 )
 
@@ -173,6 +180,7 @@ async function main() {
     ['release']
   ], 'one retained owner route carries create, ordered image staging, and the first prompt')
 
+  const originalHost = context.host
   const failureCalls = []
   context.host = {
     async retainProfile() {
@@ -197,6 +205,63 @@ async function main() {
   )
   assert.deepEqual(failureCalls.map(call => call[0]), ['retain', 'session.create', 'image.attach_bytes', 'session.close', 'release'], 'a pre-submit failure closes the half-created runtime on the exact owner')
 
+  context.host = originalHost
+  calls.length = 0
+  const submitted = await context.api.submitMonitorPrompt({
+    project,
+    prompt: 'continue from the wall',
+    session: { id: 'stored-live' }
+  })
+  assert.equal(submitted.ok, true)
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    ['retain', route],
+    ['session.resume', route, { session_id: 'stored-live', source: 'desktop', omit_messages: true, profile: 'worker' }],
+    ['prompt.submit', route, { session_id: 'runtime-resumed', text: 'continue from the wall' }],
+    ['release']
+  ], 'card send resumes the live runtime before submitting the prompt')
+
+  calls.length = 0
+  const withImage = await context.api.submitMonitorPrompt({
+    images: [{ dataUrl: 'data:image/png;base64,QUJDRA==', name: 'followup.png' }],
+    project,
+    prompt: 'look at this',
+    session: { id: 'stored-live' }
+  })
+  assert.equal(withImage.ok, true)
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)).map(call => call[0]), [
+    'retain',
+    'session.resume',
+    'image.attach_bytes',
+    'prompt.submit',
+    'release'
+  ], 'a follow-up from the wall attaches images to the resumed runtime before submit')
+
+  calls.length = 0
+  const switched = await context.api.switchMonitorSessionModel(project, { id: 'stored-live' }, {
+    model: 'claude-sonnet-4.6',
+    provider: 'anthropic'
+  })
+  assert.equal(switched.ok, true)
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    ['retain', route],
+    ['session.resume', route, { session_id: 'stored-live', source: 'desktop', omit_messages: true, profile: 'worker' }],
+    ['config.set', route, { confirm_expensive_model: true, key: 'model', session_id: 'runtime-resumed', value: 'claude-sonnet-4.6 --provider anthropic --session' }],
+    ['release']
+  ], 'switching model on a monitored session applies session-scoped config.set on the resumed runtime')
+
+  calls.length = 0
+  await context.api.stopMonitorSessionTask(project, { id: 'stored-session-stop' })
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    ['retain', route],
+    ['session.resume', route, { omit_messages: true, profile: 'worker', session_id: 'stored-session-stop', source: 'desktop' }],
+    ['session.interrupt', route, { session_id: 'runtime-resumed' }],
+    ['release']
+  ], 'stopMonitorSessionTask resumes the runtime session and issues session.interrupt on its owning route')
+
+  const cardSource = extractFunction('MonitorSessionCard')
+  assert.match(source, /function MonitorCardModelPicker\(/, 'card header mounts an inline model picker')
+  assert.match(cardSource, /MonitorCardModelPicker/, 'cards include the model picker')
+
   const dialogSource = extractFunction('MonitorNewSessionDialog')
   assert.match(source, /SelectContent,/, 'monitor create form uses the public SDK select')
   assert.match(source, /Textarea,/, 'monitor create form uses the public SDK textarea')
@@ -215,7 +280,26 @@ async function main() {
   const monitorPageSource = extractFunction('SessionMonitorPage')
   assert.match(monitorPageSource, /'aria-label': '在监控室新建会话'/, 'monitor header exposes the create action')
   assert.match(monitorPageSource, /MonitorNewSessionDialog/, 'monitor owns the create dialog lifecycle')
-  assert.match(monitorPageSource, /sessionsQuery\.refetch\(\)/, 'successful creation refreshes the wall candidates')
+  assert.match(monitorPageSource, /sessionsQuery.refetch\(\)/, 'successful creation refreshes the wall candidates')
+
+  const connectSource = extractFunction('connectMobileBridge')
+  const subscribeSource = extractFunction('subscribeGatewaySessionEvents')
+  assert.match(source, /async function pushMobileTranscript\(/, 'desktop bridge owns a transcript pusher')
+assert.match(extractFunction('pushMobileTranscript'), /resolveMobileMessageImages/, 'mobile transcript images must be inlined, not raw disk paths')
+assert.match(source, /function resolveMobileImageSrc\(/, 'desktop converts local image paths before the phone sees them')
+assert.match(source, /readFileDataUrl/, 'local images are read through the Desktop file bridge')
+  assert.match(connectSource, /pushMobileTranscript\(/, 'send_prompt must push the live transcript back to mobile')
+  assert.match(connectSource, /msg.type === 'set_model'/, 'mobile can switch the focused session model')
+  assert.match(connectSource, /msg.type === 'get_models'/, 'mobile can load the gateway model catalog')
+  assert.match(connectSource, /msg.type === 'get_earlier_messages'/, 'mobile can load earlier historical messages')
+  assert.match(source, /function pushEarlierMobileTranscript\(/, 'desktop pushes earlier historical messages on demand')
+  assert.match(source, /mode: 'tail'|mode: 'full'/, 'desktop distinguishes tail streaming pushes from full snapshot pushes')
+  assert.match(connectSource, /msg\.images/, 'mobile send_prompt forwards image attachments')
+  assert.match(subscribeSource, /scheduleMobileTranscriptPush\(/, 'gateway events must push the focused session transcript to mobile')
+  assert.doesNotMatch(subscribeSource, /syncMobileBridgeSnapshot\(\)/, 'message events must not flood the phone with session-list snapshots')
+  assert.match(source, /tool\.start/, 'mobile live timeline follows tool calls')
+  assert.match(source, /thinking\.delta/, 'mobile live timeline follows thinking')
+  assert.ok(source.includes('ws://127.0.0.1:9999/ws?client=desktop'), 'desktop bridge prefers the fixed LAN relay')
 
   console.log('overlook monitor new-session contract passed')
 }

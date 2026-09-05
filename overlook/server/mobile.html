@@ -1,0 +1,1579 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Overlook</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#ffffff">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Overlook">
+  <link rel="icon" type="image/svg+xml" href="/icon.svg">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <style>
+    :root {
+      --bg: #ffffff;
+      --surface: #ffffff;
+      --surface-low: #f5f5f5;
+      --surface-mid: #eeeeee;
+      --surface-high: #e8e8e8;
+      --border: #bec8d2;
+      --text: #131b2e;
+      --muted: #3e4850;
+      --primary: #006591;
+      --primary-soft: #0ea5e9;
+      --secondary: #006c49;
+      --secondary-soft: #6cf8bb;
+      --danger: #ba1a1a;
+      --warning: #855300;
+      --amber: #d88a00;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      height: 100dvh;
+      overflow: hidden;
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    body { display: flex; flex-direction: column; }
+    button { font: inherit; }
+    .pt-safe { padding-top: max(env(safe-area-inset-top, 0px), 10px); }
+    .pb-safe { padding-bottom: max(env(safe-area-inset-bottom, 0px), 10px); }
+    header.app {
+      flex-shrink: 0;
+      background: #ffffff;
+      border-bottom: 1px solid rgba(190,200,210,.35);
+    }
+    .app-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: .7rem .9rem .45rem;
+    }
+    .brand { display: flex; align-items: center; gap: .55rem; min-width: 0; }
+    .brand-mark {
+      width: 2rem; height: 2rem; border-radius: .8rem;
+      background: rgba(14,165,233,.12); color: var(--primary);
+      display: grid; place-items: center; font-weight: 800;
+    }
+    .title-row { display: flex; align-items: center; gap: .4rem; }
+    h1 { font-size: 1rem; line-height: 1.1; }
+    .live {
+      display: inline-flex; align-items: center; gap: .28rem;
+      font-size: .62rem; font-weight: 700; letter-spacing: .06em;
+      padding: .12rem .4rem; border-radius: 999px;
+      background: rgba(108,248,187,.35); color: var(--secondary);
+    }
+    .live .dot { width: .38rem; height: .38rem; border-radius: 50%; background: var(--secondary); }
+    .sub { font-size: .68rem; color: var(--muted); margin-top: .12rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .icon-btn {
+      width: 2.5rem; height: 2.5rem; border: 0; border-radius: .8rem;
+      background: transparent; color: var(--muted);
+    }
+    .icon-btn:active { background: var(--surface-high); }
+    main { flex: 1; min-height: 0; overflow: auto; padding: .55rem .85rem .4rem; display: flex; flex-direction: column; gap: .55rem; background: #fff; }
+    #emptyState { margin: auto; text-align: center; color: var(--muted); font-size: .85rem; }
+    #focusCard {
+      background: transparent; border: 0; border-radius: 0; padding: 0; display: flex; flex-direction: column; gap: .55rem;
+      box-shadow: none; min-height: 0; flex: 1;
+    }
+    .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: .5rem; }
+    .card-id { display: flex; align-items: center; gap: .6rem; min-width: 0; }
+    .avatar {
+      width: 2.6rem; height: 2.6rem; border-radius: 1rem;
+      background: linear-gradient(180deg, rgba(14,165,233,.16), rgba(0,101,145,.1));
+      color: var(--primary); display: grid; place-items: center; font-weight: 800;
+    }
+    #focusTitle { font-size: 1.02rem; font-weight: 750; line-height: 1.25; }
+    #focusMeta { font-size: .68rem; color: var(--muted); margin-top: .18rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    #focusStatus.status-dot { margin-top: .35rem; }
+    #transcript {
+      flex: 1; min-height: 8rem; overflow: auto; display: flex; flex-direction: column; gap: .7rem;
+      padding: .15rem .05rem .2rem; -webkit-overflow-scrolling: touch;
+    }
+    #transcript details[open] { background: transparent !important; }
+    #transcript details summary { -webkit-tap-highlight-color: transparent; }
+    .top-loader {
+      align-self: center;
+      text-align: center;
+      padding: .35rem .75rem;
+      font-size: .68rem;
+      color: var(--muted);
+      cursor: pointer;
+      user-select: none;
+      -webkit-user-select: none;
+      border-radius: 999px;
+      background: var(--surface-low);
+      transition: all 120ms ease;
+    }
+    .top-loader:active { background: var(--surface-mid); }
+    .top-loader.loading { cursor: default; opacity: .85; }
+    .top-loader.done { cursor: default; opacity: .5; background: transparent; font-size: .62rem; }
+    .msg { max-width: 92%; display: flex; flex-direction: column; gap: .22rem; }
+    .msg.user { align-self: flex-end; align-items: flex-end; }
+    .msg.assistant { align-self: flex-start; }
+    .msg-meta { font-size: .62rem; color: var(--muted); }
+    .bubble {
+      padding: .65rem .8rem; border-radius: 1rem; font-size: .82rem; line-height: 1.45;
+      background: var(--surface-low); user-select: text; -webkit-user-select: text; word-break: break-word;
+    }
+    .user .bubble { background: #fff; border: 1px solid var(--border); border-bottom-right-radius: .25rem; }
+    .assistant .bubble { background: #f5f5f5; border-bottom-left-radius: .25rem; }
+    .msg.thinking, .msg.tool, .msg.status { align-self: flex-start; max-width: 100%; background: transparent !important; }
+    .msg.thinking .bubble, .msg.tool .bubble {
+      background: transparent !important;
+    }
+    .thinking .bubble {
+      color: var(--muted); font-size: .72rem; font-style: italic;
+      padding: .45rem .65rem; white-space: pre-wrap;
+    }
+    .tool .bubble {
+      color: var(--text); font-size: .7rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      padding: .45rem .65rem; white-space: pre-wrap;
+    }
+    .status .bubble { background: transparent; color: var(--primary); font-size: .72rem; font-style: italic; padding: .15rem .1rem; }
+    .thinking .msg-meta, .tool .msg-meta { color: var(--primary); }
+    .bubble.md { white-space: normal; line-height: 1.5; }
+    .bubble.md h1 { font-size: .96rem; font-weight: 800; margin: .45rem 0 .25rem; }
+    .bubble.md h2 { font-size: .9rem; font-weight: 750; margin: .4rem 0 .2rem; }
+    .bubble.md h3 { font-size: .84rem; font-weight: 700; margin: .35rem 0 .18rem; }
+    .bubble.md h4, .bubble.md h5, .bubble.md h6 { font-size: .78rem; font-weight: 700; margin: .3rem 0 .15rem; }
+    .bubble.md p { margin: .25rem 0; }
+    .bubble.md hr { border: 0; border-top: 1px solid var(--border); margin: .6rem 0; }
+    .bubble.md blockquote { border-left: 3px solid var(--primary-soft); padding-left: .55rem; margin: .35rem 0; color: var(--muted); font-style: italic; }
+    .bubble.md del { text-decoration: line-through; opacity: .7; }
+    .bubble.md .table-wrap { overflow-x: auto; margin: .5rem 0; -webkit-overflow-scrolling: touch; }
+    .bubble.md table { width: 100%; border-collapse: collapse; font-size: .74rem; }
+    .bubble.md th, .bubble.md td { border: 1px solid var(--border); padding: .28rem .45rem; text-align: left; }
+    .bubble.md th { background: var(--surface-low); font-weight: 700; }
+    .bubble.md pre { max-width: 100%; overflow: auto; background: #fff; border: 1px solid var(--border); border-radius: .55rem; padding: .45rem .55rem; font-size: .72rem; }
+    .bubble.md code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .75rem; background: #eeeeee; padding: .05rem .28rem; border-radius: .28rem; }
+    .bubble.md pre code { background: transparent; padding: 0; }
+    .bubble.md ul, .bubble.md ol { padding-left: 1.1rem; margin: .25rem 0; }
+    .bubble.md a { color: var(--primary); }
+    .fold { border: 1px solid var(--border); border-radius: .8rem; background: transparent !important; padding: .2rem .55rem .35rem; }
+    .fold[open] { background: transparent !important; }
+    .fold summary { list-style: none; cursor: pointer; font-size: .68rem; font-weight: 700; color: var(--primary); padding: .28rem 0; }
+    .fold summary::-webkit-details-marker { display: none; }
+    .fold .bubble { background: transparent !important; padding: .15rem 0 .25rem; }
+    .think-pack { align-self: flex-start; max-width: 100%; background: transparent !important; }
+    .think-outer { border: 0; background: transparent !important; padding: 0; }
+    .think-outer[open] { background: transparent !important; }
+    .think-outer > summary {
+      list-style: none; cursor: pointer; font-size: .78rem; font-weight: 650;
+      color: var(--muted); font-style: italic; padding: .1rem 0;
+      user-select: none; -webkit-user-select: none;
+    }
+    .think-outer > summary::-webkit-details-marker { display: none; }
+    .ellipsis { display: inline-flex; margin-left: .06em; font-style: normal; font-weight: 800; letter-spacing: 0; }
+    .ellipsis span {
+      display: inline-block;
+      transform-origin: center 80%;
+      animation: none;
+    }
+    .think-pack.live .ellipsis span {
+      animation: dots-breathe 1.15s ease-in-out infinite;
+    }
+    .ellipsis span:nth-child(2) { animation-delay: .18s; }
+    .ellipsis span:nth-child(3) { animation-delay: .36s; }
+    @keyframes dots-breathe {
+      0%, 78%, 100% { transform: scaleY(.42) translateY(.1em); opacity: .28; }
+      36% { transform: scaleY(1.28) translateY(-.05em); opacity: 1; }
+    }
+    .think-inner { display: flex; flex-direction: column; gap: .4rem; margin-top: .4rem; padding-left: .45rem; border-left: 2px solid var(--border); background: transparent !important; }
+    .think-inner * { background-color: transparent !important; }
+    .think-inner .bubble.md pre { background-color: #fff !important; }
+    #activityPanel { display: none; flex-direction: column; gap: .32rem; max-height: 8.6rem; overflow: auto; padding: 0 0 .38rem; -webkit-overflow-scrolling: touch; }
+    #activityPanel.show { display: flex; }
+    .act { display: flex; align-items: center; gap: .48rem; min-height: 2.15rem; border: 1px solid var(--border); border-radius: .72rem; padding: .35rem .48rem; background: #fff; color: var(--text); box-shadow: 0 1px 3px rgba(15,23,42,.05); cursor: pointer; }
+    .act-dot { width: .48rem; height: .48rem; flex: 0 0 auto; border-radius: 999px; background: #d4d4d8; }
+    .act.running .act-dot { background: var(--primary); animation: activity-pulse 1.15s ease-in-out infinite; }
+    .act.queued .act-dot { background: var(--amber); }
+    .act.done .act-dot { background: var(--secondary); }
+    .act.failed .act-dot { background: var(--danger); }
+    .act-main { min-width: 0; flex: 1; display: flex; align-items: baseline; gap: .35rem; }
+    .act-label { flex: 0 0 auto; font-size: .61rem; font-weight: 800; color: var(--primary); }
+    .act-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .7rem; }
+    .act-detail { flex: 0 1 38%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .6rem; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .act-stop { flex: 0 0 auto; border: 0; border-radius: .42rem; padding: .18rem .36rem; background: transparent; color: var(--danger); font-size: .62rem; font-weight: 750; }
+    #activityModal { display: none; position: fixed; inset: 0; z-index: 100; background: rgba(0,0,0,.45); align-items: flex-end; justify-content: center; backdrop-filter: blur(2px); }
+    #activityModal.show { display: flex; }
+    .act-sheet { width: 100%; max-width: 480px; max-height: 75vh; background: #fff; border-radius: 1.2rem 1.2rem 0 0; padding: 1rem; display: flex; flex-direction: column; gap: .6rem; box-shadow: 0 -4px 24px rgba(0,0,0,.15); animation: sheet-up .2s cubic-bezier(0.16, 1, 0.3, 1); }
+    @keyframes sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
+    .act-sheet-head { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: .6rem; }
+    .act-sheet-head h3 { margin: 0; font-size: .9rem; font-weight: 700; color: var(--text); }
+    .act-sheet-close { border: 0; background: var(--surface-low); border-radius: .5rem; padding: .2rem .5rem; font-size: .75rem; color: var(--muted); cursor: pointer; }
+    .act-sheet-body { overflow: auto; display: flex; flex-direction: column; gap: .6rem; font-size: .75rem; word-break: break-all; }
+    .act-sheet-sec { display: flex; flex-direction: column; gap: .25rem; }
+    .act-sheet-sec label { font-size: .62rem; font-weight: 700; color: var(--muted); text-transform: uppercase; }
+    .act-sheet-code { background: #f8fafc; border: 1px solid var(--border); border-radius: .6rem; padding: .5rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .7rem; white-space: pre-wrap; overflow-x: auto; max-height: 12rem; }
+    @keyframes activity-pulse { 0%, 100% { opacity: .4; transform: scale(.78); } 50% { opacity: 1; transform: scale(1); } }
+    .card-foot { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+    #modelBtn { border: 1px solid var(--border); background: #fff; border-radius: .7rem; padding: .28rem .55rem; font-size: .68rem; color: var(--muted); max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #modelPanel { display: none; border: 1px solid var(--border); border-radius: .8rem; background: #fff; padding: .45rem; }
+    #modelPanel.show { display: block; }
+    #modelSearch { width: 100%; border: 1px solid var(--border); border-radius: .55rem; padding: .4rem .5rem; font-size: .78rem; margin-bottom: .4rem; }
+    #modelList { max-height: 10rem; overflow: auto; display: flex; flex-direction: column; gap: .2rem; }
+    #modelList button { border: 0; background: var(--surface-low); text-align: left; padding: .4rem .5rem; border-radius: .5rem; font-size: .72rem; }
+    .composer {
+      display: flex; align-items: center; gap: .35rem; flex-wrap: nowrap;
+      background: #fff; border: 0; border-radius: 1.35rem; padding: .32rem .32rem .32rem .75rem;
+      box-shadow: 0 10px 28px rgba(15,23,42,.12), 0 0 0 1px rgba(15,23,42,.06);
+    }
+    .icon-mini { min-width: 2.2rem; min-height: 2.2rem; border: 0; background: transparent; border-radius: .7rem; color: #111111; }
+    .icon-mini.rec { background: transparent; color: var(--danger); }
+    #attachPreview { display: none; gap: .35rem; flex-wrap: wrap; }
+    #attachPreview.show { display: flex; }
+    #attachPreview .chip { font-size: .62rem; background: var(--surface-mid); border-radius: .5rem; padding: .2rem .4rem; }
+    #fileInput { display: none; }
+    .thumbs { display: flex; gap: .35rem; flex-wrap: wrap; }
+    .thumb { width: 3.4rem; height: 3.4rem; border-radius: .6rem; overflow: hidden; border: 1px solid var(--border); }
+    .thumb img { width: 100%; height: 100%; object-fit: cover; }
+    #queueBanner {
+      display: none; align-items: center; justify-content: space-between; gap: .5rem;
+      padding: .45rem .6rem; border-radius: .8rem; background: #fff7ed; color: #92400e; font-size: .72rem;
+    }
+    #queueBanner button {
+      border: 0; background: #fde68a; color: #92400e; border-radius: .6rem; padding: .28rem .5rem; font-weight: 700;
+    }
+    .composer {
+      display: flex; align-items: center; gap: .35rem;
+      background: #fff; border: 0; border-radius: 1.35rem; padding: .32rem .32rem .32rem .75rem;
+      box-shadow: 0 10px 28px rgba(15,23,42,.12), 0 0 0 1px rgba(15,23,42,.06);
+    }
+    .composer-float {
+      flex-shrink: 0;
+      background: #fff;
+      padding: .35rem .85rem .2rem;
+    }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
+    .send { background: transparent; color: #111111; padding: 0; display: grid; place-items: center; }
+    .send svg, .icon-mini svg { width: 1.2rem; height: 1.2rem; display: block; }
+    .send.stop { background: transparent; color: var(--danger); }
+    .composer textarea {
+      flex: 1; border: 0; outline: 0; background: transparent; font-size: .9rem; min-width: 0;
+      resize: none; max-height: 7.2rem; min-height: 1.45rem; line-height: 1.4; font-family: inherit;
+      overflow-y: auto;
+    }
+    #focusCard { transition: transform 220ms ease, opacity 220ms ease; }
+    #focusCard.slide-left { transform: translateX(-28%); opacity: .45; }
+    #focusCard.slide-right { transform: translateX(28%); opacity: .45; }
+    .ghost, .send, .queue {
+      border: 0; min-height: 2.6rem; min-width: 2.6rem; border-radius: .85rem; font-weight: 700;
+    }
+    .ghost { background: transparent; color: var(--muted); }
+    footer.dock {
+      flex-shrink: 0; background: rgba(255,255,255,.92); border-top: 1px solid rgba(190,200,210,.6);
+      padding: .35rem .9rem;
+    }
+    .dock-btn {
+      width: 100%; min-height: 3rem; border: 0; background: transparent;
+      display: flex; align-items: center; justify-content: space-between; color: inherit;
+    }
+    .dock-left { display: flex; align-items: center; gap: .65rem; text-align: left; }
+    .dock-ico {
+      width: 1.7rem; height: 1.7rem; border-radius: .55rem; background: var(--surface-mid);
+      display: grid; place-items: center; position: relative; color: var(--primary); font-weight: 800;
+    }
+    .dock-ico .dot { position: absolute; top: -.1rem; right: -.1rem; width: .42rem; height: .42rem; border-radius: 50%; background: var(--secondary); }
+    .dock-title { font-size: .78rem; font-weight: 700; }
+    .dock-meta { font-size: .62rem; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .dock-cta { color: var(--primary); font-size: .75rem; font-weight: 700; }
+    #drawerBackdrop {
+      position: fixed; inset: 0; background: rgba(40,48,68,.38); opacity: 0; pointer-events: none; z-index: 40;
+    }
+    #drawerBackdrop.open { opacity: 1; pointer-events: auto; }
+    #drawerPanel {
+      position: fixed; left: 0; right: 0; bottom: 0; max-height: 75dvh; z-index: 50;
+      background: #fff; border-radius: 1.7rem 1.7rem 0 0; transform: translateY(110%);
+      display: flex; flex-direction: column;
+    }
+    #drawerPanel.open { transform: translateY(0); }
+    .handle { width: 2.4rem; height: .28rem; border-radius: 999px; background: #d4dbe6; margin: .7rem auto .35rem; }
+    .drawer-head { display: flex; align-items: center; justify-content: space-between; padding: .2rem 1.1rem .7rem; }
+    .drawer-head h3 { font-size: .95rem; }
+    .drawer-head p { font-size: .68rem; color: var(--muted); }
+    #drawerList { overflow: auto; padding: 0 .9rem 1rem; display: flex; flex-direction: column; gap: .6rem; }
+    .bg-card { background: var(--surface-low); border: 1px solid var(--surface-mid); border-radius: 1rem; padding: .8rem; }
+    .bg-top { display: flex; justify-content: space-between; gap: .5rem; align-items: center; }
+    .bg-title { font-size: .86rem; font-weight: 700; }
+    .bg-badge { font-size: .68rem; padding: .12rem .4rem; border-radius: 999px; background: rgba(14,165,233,.12); color: var(--primary); }
+    .bg-meta { margin-top: .35rem; font-size: .68rem; color: var(--muted); display: flex; justify-content: space-between; }
+    .bg-actions { display: flex; gap: .7rem; }
+    .bg-actions button { border: 0; background: transparent; font-weight: 700; }
+    .bg-actions .go { color: var(--primary); }
+    .bg-actions .stop { color: var(--danger); }
+    .rail-tools { padding: 0 .9rem .55rem; display: flex; flex-direction: column; gap: .45rem; }
+    #drawerSearch {
+      width: 100%; border: 1px solid var(--border); border-radius: .8rem; background: var(--surface-low);
+      padding: .55rem .7rem; font-size: .82rem; outline: 0;
+    }
+    .rail-filters { display: flex; gap: .35rem; overflow-x: auto; }
+    .rail-filters button {
+      border: 0; background: var(--surface-low); color: var(--muted); border-radius: 999px;
+      padding: .28rem .65rem; font-size: .68rem; font-weight: 700; white-space: nowrap;
+    }
+    .rail-filters button.active { background: rgba(14,165,233,.16); color: var(--primary); }
+    .project-group { display: flex; flex-direction: column; gap: .45rem; }
+    .project-head {
+      display: flex; align-items: center; justify-content: space-between; gap: .5rem;
+      padding: .15rem .15rem 0;
+    }
+    .project-label { font-size: .72rem; font-weight: 800; color: var(--text); display: flex; align-items: center; gap: .4rem; min-width: 0; }
+    .project-glyph { width: 1rem; height: 1rem; flex-shrink: 0; }
+    .session-row {
+      position: relative;
+      isolation: isolate;
+      overflow: hidden;
+      margin-left: 1.15rem;
+      padding: .55rem .7rem;
+      border-radius: .7rem;
+      box-shadow: inset 2px 0 0 var(--codex-project-color, #ece5d8);
+      background: #fff;
+    }
+    .session-row.active { background: #f4f4f5; }
+    .session-row > :not(.running-arc) { position: relative; z-index: 1; }
+    .running-arc {
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      pointer-events: none;
+      overflow: hidden;
+      z-index: 0;
+    }
+    .running-arc::before {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 220%;
+      height: 220%;
+      background: conic-gradient(from 0deg, transparent 0 68%, var(--codex-project-color, #111111) 86%, transparent 100%);
+      animation: rail-spin 1.8s linear infinite;
+    }
+    .running-arc::after {
+      content: '';
+      position: absolute;
+      inset: 1.5px;
+      border-radius: inherit;
+      background: #fff;
+    }
+    .session-row.active .running-arc::after { background: #f4f4f5; }
+    @keyframes rail-spin {
+      from { transform: translate(-50%, -50%) rotate(0deg); }
+      to { transform: translate(-50%, -50%) rotate(360deg); }
+    }
+    .status-dot {
+      width: .42rem;
+      height: .42rem;
+      border-radius: 999px;
+      flex-shrink: 0;
+      display: inline-block;
+      box-sizing: border-box;
+      background: #d4d4d8;
+    }
+    .status-dot.working { width: .5rem; height: .5rem; background: #006591; }
+    .status-dot.talking { width: .5rem; height: .5rem; background: #0ea5e9; }
+    .status-dot.unread { width: .5rem; height: .5rem; background: #16a34a; }
+    .status-dot.idle { width: .28rem; height: .28rem; background: #d4d4d8; }
+    .project-count { font-size: .62rem; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.86); display: none; align-items: center; justify-content: center; z-index: 80; padding: 1rem; }
+    .lightbox img { max-width: 100%; max-height: 100%; }
+  </style>
+</head>
+<body>
+  <header class="app pt-safe">
+    <div class="app-row">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">O</div>
+        <div>
+          <div class="title-row">
+            <h1>Overlook</h1>
+            <span class="live" id="desktopStatus"><span class="dot"></span><span id="statusLabel">等待桌面端…</span></span>
+          </div>
+          <div class="sub" id="liveCount">0 个会话</div>
+        </div>
+      </div>
+      <div>
+        <button class="icon-btn" id="refreshBtn" aria-label="刷新" type="button">↻</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div id="emptyState">桌面端连接后将自动呈现会话内容…</div>
+    <article id="focusCard" hidden>
+      <div class="card-head">
+        <div class="card-id">
+          <div class="avatar" aria-hidden="true">01</div>
+          <div>
+            <div id="focusTitle">会话</div>
+            <div id="focusMeta">网关</div>
+          </div>
+        </div>
+        <span id="focusStatus" class="status-dot idle" aria-label="状态"></span>
+      </div>
+      <div id="transcript"></div>
+      <div id="queueBanner">
+        <span id="queueText">消息队列 (0) 排队待发</span>
+        <button type="button" onclick="sendQueueNow()">立即发送队列</button>
+      </div>
+      <div class="card-foot">
+        <button id="modelBtn" type="button">选择模型</button>
+        <span class="dock-meta">左右滑动切换会话</span>
+      </div>
+      <div id="modelPanel">
+        <input id="modelSearch" placeholder="搜索模型" autocomplete="off">
+        <div id="modelList"></div>
+        </div>
+        </article>
+        </main>
+        <div class="composer-float">
+        <div id="activityPanel" aria-live="polite"></div>
+        <div id="activityModal" onclick="closeActivityModal(event)">
+          <div class="act-sheet" onclick="event.stopPropagation()">
+            <div class="act-sheet-head">
+              <h3 id="actSheetTitle">任务详情</h3>
+              <button class="act-sheet-close" type="button" onclick="closeActivityModal()">关闭</button>
+            </div>
+            <div class="act-sheet-body" id="actSheetBody"></div>
+          </div>
+        </div>
+        <div id="attachPreview"></div>
+        <div class="composer">
+        <button class="icon-mini" id="attachBtn" type="button" aria-label="添加附件">📎</button>
+        <input id="fileInput" type="file" multiple accept="image/*,audio/*,.pdf,.txt,.md,.json,.csv,.log,.webp">
+        <textarea id="promptInput" rows="1" placeholder="向 Hermes 发送追加指令…" autocomplete="off"></textarea>
+        <button class="icon-mini" id="voiceBtn" type="button" aria-label="语音消息"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><path d="M12 18v3"/></svg><span class="sr-only">语音</span></button>
+        <button class="send" id="mainActionBtn" type="button" onclick="handleMainAction()" aria-label="发送"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M3.4 20.6 21 12 3.4 3.4 3 10l11 2-11 2z"/></svg><span class="sr-only">发送</span></button>
+      </div>
+  </div>
+
+  <footer class="dock pb-safe">
+    <button class="dock-btn" type="button" onclick="toggleDrawer(true)" aria-label="打开会话列表">
+      <div class="dock-left">
+        <div class="dock-ico">☰<span class="dot"></span></div>
+        <div>
+          <div class="dock-title" id="drawerCount">0 个会话</div>
+          <div class="dock-meta" id="drawerMeta">按项目分组 · 按新鲜度排序</div>
+        </div>
+      </div>
+      <div class="dock-cta">会话 ↑</div>
+    </button>
+  </footer>
+
+  <div id="drawerBackdrop" onclick="toggleDrawer(false)"></div>
+  <aside id="drawerPanel">
+    <div class="handle"></div>
+    <div class="drawer-head">
+      <div>
+        <h3>会话</h3>
+        <p>侧边栏同款：项目分组、新鲜度、筛选</p>
+      </div>
+      <button class="icon-btn" type="button" onclick="toggleDrawer(false)" aria-label="关闭">✕</button>
+    </div>
+    <div class="rail-tools">
+      <input id="drawerSearch" placeholder="搜索会话" autocomplete="off" oninput="renderDrawer()">
+      <div class="rail-filters" id="drawerFilters">
+        <button type="button" data-filter="all" class="active" onclick="setSessionFilter('all')">全部</button>
+        <button type="button" data-filter="unread" onclick="setSessionFilter('unread')">未读</button>
+        <button type="button" data-filter="open" onclick="setSessionFilter('open')">开放中</button>
+        <button type="button" data-filter="pinned" onclick="setSessionFilter('pinned')">置顶</button>
+        <button type="button" data-filter="recent" onclick="setSessionFilter('recent')">24小时</button>
+      </div>
+    </div>
+    <div id="drawerList"></div>
+  </aside>
+
+  <div class="lightbox" id="lightbox" onclick="closeLightbox()">
+    <img id="lightboxImg" alt="Zoomed">
+  </div>
+
+  <script>
+    let ws = null
+    let activeSessionId = null
+    let sessions = []
+    let isExecuting = false
+    let currentQueues = {}
+    let busyBySession = {}
+    let localBusyUntil = {}
+    let railProjects = []
+    let sessionFilter = 'all'
+    let transcriptPollTimer = 0
+    let localMessages = []
+    let pendingFiles = []
+    let modelChoices = []
+    let foldOpenState = {}
+    let transcriptCache = {}
+    let sessionEarlierOffset = {}
+    let sessionHasMoreEarlier = {}
+    let isEarlierLoading = false
+    let liveActivityBySession = {}
+    let touchStartX = 0
+    let touchStartY = 0
+    let mediaRecorder = null
+    let mediaChunks = []
+
+    function isStandaloneMode() {
+      try {
+        return Boolean(
+          (typeof window !== 'undefined') && (
+            window.matchMedia?.('(display-mode: standalone)')?.matches ||
+            window.navigator?.standalone === true
+          )
+        )
+      } catch {
+        return false
+      }
+    }
+
+    if (isStandaloneMode() && typeof sessionStorage !== 'undefined' && !sessionStorage.getItem('overlook_pwa_booted')) {
+      sessionStorage.setItem('overlook_pwa_booted', '1')
+      try {
+        if (window.location.search && window.location.search.includes('session=')) {
+          history.replaceState(null, '', window.location.pathname || '/')
+        }
+      } catch {}
+    }
+
+    function connect() {
+      const loc = window.location
+      const proto = loc.protocol === 'https:' ? 'wss:' : 'ws:'
+      const basePath = loc.pathname.replace(/\/mobile\/?$/, '')
+      const path = loc.pathname.indexOf('/api/plugins/overlook') >= 0 ? `${basePath}/ws` : '/ws'
+      ws = new WebSocket(`${proto}//${loc.host}${path}`)
+      ws.onopen = () => {
+        updateDesktopStatus(true)
+        if (activeSessionId) requestTranscript(activeSessionId)
+      }
+      ws.onmessage = event => {
+        try {
+          const data = JSON.parse(event.data)
+          if (data.type === 'init') {
+            updateDesktopStatus(data.payload.desktopConnected)
+            if (data.payload.snapshot) applySnapshot(data.payload.snapshot)
+          } else if (data.type === 'desktop_status') {
+            updateDesktopStatus(data.connected)
+          } else if (data.type === 'snapshot') {
+            applySnapshot(data.payload)
+          } else if (data.type === 'transcript_update') {
+            applyTranscriptUpdate(data.sessionId, data.messages, data)
+          } else if (data.type === 'busy_update') {
+            applyBusyUpdate(data)
+          } else if (data.type === 'activity_update') {
+            applyActivityUpdate(data)
+          } else if (data.type === 'models_update') {
+            if (data.sessionId === activeSessionId) applyModels(data.choices)
+          }
+        } catch (e) {
+          console.error('WS Parse Error', e)
+        }
+      }
+      ws.onclose = () => {
+        updateDesktopStatus(false)
+        setTimeout(connect, 3000)
+      }
+    }
+
+    function updateDesktopStatus(online) {
+      const el = document.getElementById('desktopStatus')
+      const lbl = document.getElementById('statusLabel')
+      el.className = online ? 'live' : 'live'
+      lbl.innerText = online ? 'LIVE' : '等待桌面端…'
+    }
+
+    function sessionTime(session) {
+      const value = session?.lastActive ?? session?.updatedAt ?? session?.last_active ?? session?.updated_at ?? 0
+      const numeric = Number(value)
+      return Number.isFinite(numeric) ? numeric : 0
+    }
+
+    function sessionIdFromUrl() {
+      if (isStandaloneMode() && typeof sessionStorage !== 'undefined' && !sessionStorage.getItem('overlook_user_navigated')) {
+        return ''
+      }
+      try {
+        const params = new URL(window.location.href).searchParams
+        return String(params.get('session') || '').trim()
+      } catch {
+        const search = String(window.location.search || '')
+        const match = search.match(/[?&]session=([^&]+)/)
+        return match ? decodeURIComponent(match[1]) : ''
+      }
+    }
+
+    function rememberSessionInUrl(id) {
+      if (!id || typeof history === 'undefined' || typeof history.replaceState !== 'function') return
+      try {
+        const url = new URL(window.location.href)
+        if (url.searchParams.get('session') === id) return
+        url.searchParams.set('session', id)
+        history.replaceState(null, '', url.pathname + url.search + url.hash)
+      } catch {
+        history.replaceState(null, '', `?session=${encodeURIComponent(id)}`)
+      }
+    }
+
+    function pickInitialSessionId() {
+      const fromUrl = sessionIdFromUrl()
+      if (fromUrl && sessions.some(s => s.id === fromUrl)) return fromUrl
+      const ranked = [...sessions].sort((a, b) => sessionTime(b) - sessionTime(a))
+      return ranked[0]?.id || ''
+    }
+
+    function applySnapshot(snapshot) {
+      if (Array.isArray(snapshot.projects) && snapshot.projects.length) {
+        railProjects = snapshot.projects
+        sessions = railProjects.flatMap(project => project.sessions || [])
+      } else if (Array.isArray(snapshot.monitoredSessions)) {
+        sessions = snapshot.monitoredSessions
+        railProjects = [{ key: 'all', label: '会话', gateway: '', sessions }]
+      }
+      if (snapshot.queues) currentQueues = snapshot.queues
+      if (snapshot.busyBySession && typeof snapshot.busyBySession === 'object') {
+        busyBySession = { ...snapshot.busyBySession }
+      }
+      for (const session of sessions) {
+        if (session?.busy) busyBySession[session.id] = true
+      }
+      document.getElementById('liveCount').textContent = `${sessions.length} 个会话`
+      const nextId = activeSessionId && sessions.some(s => s.id === activeSessionId)
+        ? activeSessionId
+        : pickInitialSessionId()
+      if (nextId && nextId !== activeSessionId) selectSession(nextId)
+      else {
+        renderFocus()
+        updateQueueBanner()
+        updateActionBtn()
+        renderDrawer()
+        if (activeSessionId) rememberSessionInUrl(activeSessionId)
+      }
+    }
+
+    function escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+    }
+
+    function sessionBusy(session) {
+      const id = session?.id
+      if (id && localBusyUntil[id] && localBusyUntil[id] > Date.now()) return true
+      return Boolean(busyBySession[id] || session?.status === '执行中' || session?.busy)
+    }
+
+    function applyBusyUpdate(data) {
+      data = data && typeof data === 'object' ? data : {}
+      if (data.busyBySession && typeof data.busyBySession === 'object') {
+        busyBySession = { ...data.busyBySession }
+      }
+      const id = String(data.sessionId || '').trim()
+      if (id) {
+        if (data.busy) busyBySession[id] = true
+        else {
+          delete busyBySession[id]
+          delete localBusyUntil[id]
+        }
+      }
+      const session = currentSession() || { id: activeSessionId }
+      isExecuting = sessionBusy(session)
+      renderFocus()
+      updateActionBtn()
+      renderDrawer()
+      if (isExecuting) startTranscriptPoll()
+      else stopTranscriptPoll()
+    }
+
+    function selectSession(id, fromUser) {
+      if (fromUser && typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem('overlook_user_navigated', '1')
+      }
+      activeSessionId = id
+      isExecuting = sessionBusy({ id })
+      localMessages = []
+      rememberSessionInUrl(id)
+      renderFocus()
+      renderActivity(transcriptCache[id] || [])
+      updateQueueBanner()
+      updateActionBtn()
+      renderDrawer()
+      const cached = transcriptCache[id]
+      if (Array.isArray(cached) && cached.length > 0) {
+        renderTranscript(cached)
+      } else {
+        const container = document.getElementById('transcript')
+        if (container) {
+          container.innerHTML = '<div style="text-align:center;color:var(--muted);margin-top:2.5rem;font-size:.8rem;letter-spacing:.02em"><span class="ellipsis" style="font-size:1.1rem"><span>·</span><span>·</span><span>·</span></span><div style="margin-top:.35rem">加载中…</div></div>'
+        }
+      }
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'get_transcript', sessionId: id }))
+        ws.send(JSON.stringify({ type: 'get_models', sessionId: id }))
+      }
+      preloadAdjacentTranscripts(id)
+      if (isExecuting) startTranscriptPoll()
+      else stopTranscriptPoll()
+    }
+
+    function preloadAdjacentTranscripts(currentId) {
+      if (!sessions.length || !ws || ws.readyState !== WebSocket.OPEN) return
+      const ranked = [...sessions].sort((a, b) => sessionTime(b) - sessionTime(a))
+      const idx = ranked.findIndex(s => s.id === currentId)
+      if (idx < 0) return
+      const prev = ranked[(idx - 1 + ranked.length) % ranked.length]?.id
+      const next = ranked[(idx + 1) % ranked.length]?.id
+      for (const adjId of [prev, next]) {
+        if (adjId && adjId !== currentId && !transcriptCache[adjId]) {
+          ws.send(JSON.stringify({ type: 'get_transcript', sessionId: adjId }))
+        }
+      }
+    }
+
+    function currentSession() {
+      return sessions.find(s => s.id === activeSessionId) || null
+    }
+
+    function renderFocus() {
+      const empty = document.getElementById('emptyState')
+      const card = document.getElementById('focusCard')
+      const session = currentSession()
+      if (!session) {
+        empty.hidden = false
+        card.hidden = true
+        return
+      }
+      empty.hidden = true
+      card.hidden = false
+      const index = Math.max(0, sessions.findIndex(s => s.id === session.id))
+      document.querySelector('.avatar').textContent = String(index + 1).padStart(2, '0')
+      document.getElementById('focusTitle').textContent = session.title || '未命名会话'
+      document.getElementById('focusMeta').textContent = session.gateway || '网关'
+      const kind = sessionDotKind(session)
+      const statusEl = document.getElementById('focusStatus')
+      statusEl.className = `status-dot ${kind}`
+      statusEl.dataset.status = kind
+      statusEl.title = sessionStatusLabel(session)
+      statusEl.setAttribute('aria-label', sessionStatusLabel(session))
+      statusEl.textContent = ''
+      isExecuting = sessionBusy(session)
+      const modelBtn = document.getElementById('modelBtn')
+      if (modelBtn) modelBtn.textContent = session.model || '选择模型'
+    }
+
+    function requestEarlierMessages() {
+      if (!activeSessionId || !ws || ws.readyState !== WebSocket.OPEN) return
+      if (isEarlierLoading) return
+      if (sessionHasMoreEarlier[activeSessionId] === false) return
+      const currentOffset = sessionEarlierOffset[activeSessionId] || (transcriptCache[activeSessionId]?.length || 0)
+      isEarlierLoading = true
+      const topLoader = document.getElementById('topLoader')
+      if (topLoader) {
+        topLoader.className = 'top-loader loading'
+        topLoader.innerHTML = '<span class="ellipsis"><span>·</span><span>·</span><span>·</span></span> 正在加载更早消息…'
+      }
+      ws.send(JSON.stringify({
+        type: 'get_earlier_messages',
+        sessionId: activeSessionId,
+        offset: currentOffset,
+        limit: 40
+      }))
+    }
+
+    function applyTranscriptUpdate(sessionId, messages, extra) {
+      const incoming = Array.isArray(messages) ? messages : []
+      const mode = extra?.mode || 'full'
+      isEarlierLoading = false
+
+      if (sessionId) {
+        if (!transcriptCache[sessionId]) transcriptCache[sessionId] = []
+        if (mode === 'prepend') {
+          const existing = transcriptCache[sessionId]
+          const existingSet = new Set(existing.map(m => (m.role || m.kind) + '::' + String(m.text || '').trim()))
+          const newItems = incoming.filter(m => !existingSet.has((m.role || m.kind) + '::' + String(m.text || '').trim()))
+          transcriptCache[sessionId] = newItems.concat(existing)
+          sessionEarlierOffset[sessionId] = (sessionEarlierOffset[sessionId] || 0) + incoming.length
+          if (extra && 'hasMore' in extra) {
+            sessionHasMoreEarlier[sessionId] = Boolean(extra.hasMore) && newItems.length > 0
+          }
+        } else if (mode === 'tail') {
+          const startIndex = Number.isFinite(Number(extra?.startIndex))
+            ? Math.max(0, Number(extra.startIndex))
+            : transcriptCache[sessionId].length
+          transcriptCache[sessionId].splice(startIndex, transcriptCache[sessionId].length - startIndex, ...incoming)
+        } else {
+          transcriptCache[sessionId] = incoming
+          sessionEarlierOffset[sessionId] = incoming.length
+          if (extra && 'hasMore' in extra) {
+            sessionHasMoreEarlier[sessionId] = Boolean(extra.hasMore)
+          }
+        }
+      }
+
+      const current = currentSession()
+      if (sessionId !== activeSessionId && sessionId !== current?.runtimeId) return
+      const container = document.getElementById('transcript')
+      const stillLocal = localMessages.filter(local => {
+        const text = String(local.text || '').trim()
+        const allCurrent = transcriptCache[sessionId] || []
+        return Boolean(text) && !allCurrent.some(row => (row.role === 'user' || row.kind === 'user') && String(row.text || '').trim() === text)
+      })
+      localMessages = stillLocal
+      const fullList = (transcriptCache[sessionId] || []).concat(stillLocal)
+
+      if (mode === 'prepend' && container) {
+        const oldHeight = container.scrollHeight
+        const oldTop = container.scrollTop
+        renderTranscript(fullList, { preserveScroll: true })
+        container.scrollTop = oldTop + (container.scrollHeight - oldHeight)
+      } else if (mode === 'tail' && container) {
+        const wasNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 120
+        renderTranscript(fullList, { autoScroll: wasNearBottom })
+      } else {
+        renderTranscript(fullList, { autoScroll: true })
+      }
+
+      stopTranscriptPoll()
+    }
+
+    function requestTranscript(id) {
+      const sessionId = id || activeSessionId
+      if (!sessionId || !ws || ws.readyState !== WebSocket.OPEN) return
+      ws.send(JSON.stringify({ type: 'get_transcript', sessionId }))
+    }
+
+    function startTranscriptPoll() {
+      // WebSocket pushes transcript_update and busy_update in real-time.
+      // High-frequency polling starves the Electron IPC bridge.
+    }
+
+    function stopTranscriptPoll() {
+      if (transcriptPollTimer) {
+        clearInterval(transcriptPollTimer)
+        transcriptPollTimer = 0
+      }
+    }
+
+    function renderMarkdown(src) {
+      const fences = []
+      let body = String(src || '').replace(/```[\w]*\n([\s\S]*?)```/g, (_, code) => {
+        const index = fences.length
+        fences.push('<pre><code>' + escapeHtml(code) + '</code></pre>')
+        return '\u0000FENCE' + index + '\u0000'
+      })
+      body = escapeHtml(body)
+
+      // Tables
+      body = body.replace(/(?:^\|.+?\|\s*$\n?)+/gm, tableBlock => {
+        const lines = tableBlock.trim().split('\n').map(l => l.trim()).filter(Boolean)
+        if (lines.length < 2) return tableBlock
+        if (!/^\|?\s*[-:]+[-| :]*\|?$/.test(lines[1])) return tableBlock
+        const headerCells = lines[0].replace(/^\||\|$/g, '').split('|').map(c => c.trim())
+        const rows = lines.slice(2).map(line => {
+          const cells = line.replace(/^\||\|$/g, '').split('|').map(c => c.trim())
+          return `<tr>${cells.map(c => `<td>${c}</td>`).join('')}</tr>`
+        })
+        return `<div class="table-wrap"><table><thead><tr>${headerCells.map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`
+      })
+
+      // Horizontal rules
+      body = body.replace(/^(?:---|___|\*\*\*)\s*$/gm, '<hr>')
+
+      // Headings 1-6
+      body = body.replace(/^######\s+(.*)$/gm, '<h6>$1</h6>')
+      body = body.replace(/^#####\s+(.*)$/gm, '<h5>$1</h5>')
+      body = body.replace(/^####\s+(.*)$/gm, '<h4>$1</h4>')
+      body = body.replace(/^###\s+(.*)$/gm, '<h3>$1</h3>')
+      body = body.replace(/^##\s+(.*)$/gm, '<h2>$1</h2>')
+      body = body.replace(/^#\s+(.*)$/gm, '<h1>$1</h1>')
+
+      // Blockquotes
+      body = body.replace(/^&gt;\s?(.*)$/gm, '<blockquote>$1</blockquote>')
+
+      // Strikethrough
+      body = body.replace(/~~(.+?)~~/g, '<del>$1</del>')
+
+      // Lists
+      body = body.replace(/^(?:- |\* )(.*)$/gm, '<li>$1</li>')
+      body = body.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>')
+
+      // Bold, Code, Links
+      body = body.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      body = body.replace(/`([^`]+)`/g, '<code>$1</code>')
+      body = body.replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+      body = body.replace(/\n/g, '<br>')
+      return body.replace(/\u0000FENCE(\d+)\u0000/g, (_, index) => fences[Number(index)] || '')
+    }
+
+    function messageKind(m) {
+      return String(m?.kind || m?.role || 'assistant').trim().toLowerCase()
+    }
+
+    function messageMeta(m) {
+      const kind = messageKind(m)
+      if (kind === 'user') return '用户'
+      if (kind === 'thinking') return '思考'
+      if (kind === 'tool') return m.tool ? `工具 · ${escapeHtml(String(m.tool))}` : '工具'
+      if (kind === 'todo') return 'Todo'
+      if (kind === 'subagent') return '子代理'
+      if (kind === 'background') return '后台任务'
+      return '助手'
+    }
+
+    function messageHtml(m, key) {
+      const kind = messageKind(m)
+      if (kind === 'status') return ''
+      const cls = ['user', 'thinking', 'tool', 'todo', 'subagent', 'background'].includes(kind) ? kind : 'assistant'
+      const body = kind === 'assistant' || kind === 'todo' || kind === 'subagent' || kind === 'background'
+        ? `<div class="bubble md">${renderMarkdown(m.text || '')}</div>`
+        : `<div class="bubble">${escapeHtml(m.text || '')}</div>`
+      const thumbs = (() => {
+        const list = (m.images || []).map(img => String(img || '').trim()).filter(src => /^(?:data:|https?:)/i.test(src))
+        if (!list.length) return ''
+        return `<div class="thumbs">${list.map(src => `<button class="thumb" type="button" onclick="openLightbox(this.querySelector('img').src)"><img src="${escapeHtml(src)}" alt=""></button>`).join('')}</div>`
+      })()
+      if (kind === 'thinking' || kind === 'tool') {
+        const foldKey = key || ''
+        const isOpen = foldKey && foldOpenState[foldKey] ? ' open' : ''
+        const onToggle = foldKey ? ` onfocus="this.dataset.touched='1'" ontoggle="recordFoldToggle('${escapeHtml(foldKey)}', this.open)"` : ''
+        return `<div class="msg ${cls}"><details class="fold" data-fold-key="${escapeHtml(foldKey)}"${isOpen}${onToggle}><summary>${messageMeta(m)}</summary>${body}${thumbs}</details></div>`
+      }
+      return `<div class="msg ${cls}">
+          <div class="msg-meta">${messageMeta(m)}</div>
+          ${body}
+          ${thumbs}
+        </div>`
+    }
+
+    function recordFoldToggle(key, isOpen) {
+      if (!key) return
+      foldOpenState[key] = Boolean(isOpen)
+    }
+
+    function thinkPackHtml(pack, live, packKey) {
+      const label = live
+        ? '思考中<span class="ellipsis" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>'
+        : '思考'
+      const key = packKey || ''
+      const isOpen = key && foldOpenState[key] ? ' open' : ''
+      const onToggle = key ? ` onfocus="this.dataset.touched='1'" ontoggle="recordFoldToggle('${escapeHtml(key)}', this.open)"` : ''
+      return `<div class="msg think-pack${live ? ' live' : ''}"><details class="think-outer" data-fold-key="${escapeHtml(key)}"${isOpen}${onToggle}><summary>${label}</summary><div class="think-inner">${pack.map((item, idx) => messageHtml(item, `${key}:item:${idx}`)).join('')}</div></details></div>`
+    }
+
+    function activityKind(item) {
+      const kind = String(item?.kind || item?.role || '').trim()
+      return ['todo', 'subagent', 'background'].includes(kind) ? kind : ''
+    }
+
+    function activityState(item) {
+      const state = String(item?.state || '').trim().toLowerCase()
+      if (['failed', 'error', 'timeout', 'interrupted'].includes(state)) return 'failed'
+      if (['done', 'completed', 'exited', 'success'].includes(state)) return 'done'
+      if (['queued', 'pending', 'waiting'].includes(state)) return 'queued'
+      return 'running'
+    }
+
+    function activityLabel(kind) {
+      if (kind === 'todo') return 'Todo'
+      if (kind === 'subagent') return '子代理'
+      return '后台'
+    }
+
+    function applyActivityUpdate(data) {
+      data = data && typeof data === 'object' ? data : {}
+      const id = String(data.sessionId || '').trim()
+      if (!id) return
+      const items = Array.isArray(data.items) ? data.items : []
+      liveActivityBySession = {
+        ...liveActivityBySession,
+        [id]: items.map((item, index) => ({
+          id: String(item?.id || `${activityKind(item) || 'activity'}-${index}`),
+          kind: activityKind(item),
+          state: activityState(item),
+          title: String(item?.title || item?.text || ''),
+          detail: String(item?.detail || ''),
+          fullCommand: item?.fullCommand || item?.details || item?.command || '',
+          output: item?.output || ''
+        })).filter(item => item.kind && item.title)
+      }
+      if (id === activeSessionId) renderActivity(transcriptCache[id] || localMessages)
+    }
+
+    function stopActivityItem(processId) {
+      if (!activeSessionId || !processId || !ws || ws.readyState !== WebSocket.OPEN) return
+      ws.send(JSON.stringify({ type: 'stop_background_task', sessionId: activeSessionId, processId: String(processId) }))
+    }
+
+    let currentActivityItems = []
+
+    function openActivityDetail(index) {
+      const item = currentActivityItems[index]
+      if (!item) return
+      const modal = document.getElementById('activityModal')
+      const titleEl = document.getElementById('actSheetTitle')
+      const bodyEl = document.getElementById('actSheetBody')
+      if (!modal || !titleEl || !bodyEl) return
+
+      titleEl.textContent = item.title || '任务详情'
+      const kind = activityKind(item)
+      const state = activityState(item)
+      const command = item.fullCommand || item.details || item.title || ''
+      const output = item.output || ''
+
+      let html = ''
+      html += `<div class="act-sheet-sec"><label>类型 / 状态</label><div><b>${activityLabel(kind)}</b> · <span class="act-dot" style="display:inline-block;vertical-align:middle;margin:0 4px"></span>${state === 'running' ? '运行中' : (state === 'failed' ? '失败 / 异常退出' : '已完成')}</div></div>`
+      if (item.detail) {
+        html += `<div class="act-sheet-sec"><label>运行状态</label><div>${escapeHtml(item.detail)}</div></div>`
+      }
+      if (command) {
+        html += `<div class="act-sheet-sec"><label>执行命令 / 任务内容</label><pre class="act-sheet-code"><code>${escapeHtml(command)}</code></pre></div>`
+      }
+      if (output) {
+        html += `<div class="act-sheet-sec"><label>最新输出日志</label><pre class="act-sheet-code"><code>${escapeHtml(output)}</code></pre></div>`
+      }
+      bodyEl.innerHTML = html
+      modal.className = 'show'
+    }
+
+    function closeActivityModal() {
+      const modal = document.getElementById('activityModal')
+      if (modal) modal.className = ''
+    }
+
+    function renderActivity(messages) {
+      const panel = document.getElementById('activityPanel')
+      if (!panel) return
+      const liveItems = Array.isArray(liveActivityBySession[activeSessionId]) ? liveActivityBySession[activeSessionId] : []
+      const transcriptItems = (messages || [])
+        .filter(m => ['todo', 'subagent', 'background'].includes(messageKind(m)))
+        .map((item, index) => ({
+          id: `transcript-${index}`,
+          kind: messageKind(item),
+          state: 'done',
+          title: String(item.text || ''),
+          detail: ''
+        }))
+      const items = liveItems.length ? liveItems : transcriptItems
+      currentActivityItems = items
+      panel.className = items.length ? 'show' : ''
+      panel.innerHTML = items.map((item, index) => {
+        const kind = activityKind(item)
+        const state = activityState(item)
+        const stop = kind === 'background' && state === 'running'
+          ? `<button class="act-stop" type="button" data-process-id="${escapeHtml(String(item.id || ''))}" onclick="event.stopPropagation();stopActivityItem(this.dataset.processId)">停止</button>`
+          : ''
+        return `<div class="act ${escapeHtml(state)}" onclick="openActivityDetail(${index})"><span class="act-dot" aria-hidden="true"></span><div class="act-main"><b class="act-label">${activityLabel(kind)}</b><span class="act-title">${escapeHtml(String(item.title || '').slice(0, 180))}</span></div>${item.detail ? `<span class="act-detail">${escapeHtml(String(item.detail).slice(0, 120))}</span>` : ''}${stop}</div>`
+      }).join('')
+    }
+
+    function renderTranscript(messages, options) {
+      const container = document.getElementById('transcript')
+      if (container && typeof container.querySelectorAll === 'function') {
+        try {
+          container.querySelectorAll('details[data-fold-key]').forEach(el => {
+            const key = el.getAttribute('data-fold-key')
+            if (key && el.open) foldOpenState[key] = true
+          })
+        } catch {}
+      }
+      const rows = Array.isArray(messages) ? messages.filter(m => messageKind(m) !== 'status') : []
+      renderActivity(rows)
+      if (!rows.length) {
+        container.innerHTML = '<div style="text-align:center;color:var(--muted);margin-top:1.4rem;font-size:.8rem;">暂无消息</div>'
+        return
+      }
+      const hasMore = sessionHasMoreEarlier[activeSessionId] !== false
+      const topLoaderHtml = isEarlierLoading
+        ? '<div id="topLoader" class="top-loader loading"><span class="ellipsis"><span>·</span><span>·</span><span>·</span></span> 正在加载更早消息…</div>'
+        : (hasMore
+          ? '<div id="topLoader" class="top-loader" onclick="requestEarlierMessages()">查看更早的消息 ↑</div>'
+          : (rows.length > 5 ? '<div id="topLoader" class="top-loader done">— 已展示最早消息 —</div>' : ''))
+
+      const bodyHtml = (() => {
+        const chunks = []
+        let i = 0
+        let packIndex = 0
+        while (i < rows.length) {
+          const kind = messageKind(rows[i])
+          if (kind === 'thinking' || kind === 'tool') {
+            const pack = []
+            const startIndex = i
+            while (i < rows.length && (messageKind(rows[i]) === 'thinking' || messageKind(rows[i]) === 'tool')) {
+              pack.push(rows[i])
+              i += 1
+            }
+            const packKey = `pack:${activeSessionId || 'default'}:${startIndex}`
+            chunks.push(thinkPackHtml(pack, i >= rows.length, packKey))
+            packIndex += 1
+            continue
+          }
+          chunks.push(messageHtml(rows[i], `msg:${activeSessionId || 'default'}:${i}`))
+          i += 1
+        }
+        return chunks.join('')
+      })()
+
+      container.innerHTML = topLoaderHtml + bodyHtml
+      if (!options?.preserveScroll && (options?.autoScroll || typeof options?.autoScroll === 'undefined')) {
+        container.scrollTop = container.scrollHeight
+      }
+    }
+
+    function appendLocalMessage(role, text, images) {
+      const value = String(text || '').trim()
+      const pics = (images || []).map(img => String(img || '').trim()).filter(src => /^(?:data:|https?:)/i.test(src))
+      if (!value && !pics.length) return
+      localMessages.push({ role, text: value, images: pics })
+      const container = document.getElementById('transcript')
+      if (!container) return
+      if (!container.innerHTML || container.innerHTML.indexOf('暂无消息') >= 0) {
+        container.innerHTML = ''
+      }
+      container.innerHTML += messageHtml({ images: pics, role, text: value })
+      container.scrollTop = container.scrollHeight
+    }
+
+    function updateQueueBanner() {
+      const banner = document.getElementById('queueBanner')
+      const queue = currentQueues[activeSessionId] || []
+      const btn = typeof banner?.querySelector === 'function' ? banner.querySelector('button') : null
+      if (btn) btn.textContent = '立即发送队列'
+      if (queue.length > 0) {
+        banner.style.display = 'flex'
+        document.getElementById('queueText').innerText = `消息队列 (${queue.length}) 排队待发`
+      } else {
+        banner.style.display = 'none'
+      }
+    }
+
+    function updateActionBtn() {
+      const btn = document.getElementById('mainActionBtn')
+      const input = document.getElementById('promptInput').value.trim()
+      if (isExecuting && !input && !pendingFiles.length) {
+        btn.className = 'send stop'
+        btn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><span class="sr-only">停止</span>'
+      } else {
+        btn.className = 'send'
+        btn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3.4 20.6 21 12 3.4 3.4 3 10l11 2-11 2z"/></svg><span class="sr-only">发送</span>'
+      }
+    }
+
+    function handleMainAction() {
+      const input = document.getElementById('promptInput')
+      const text = input.value.trim()
+      if (!activeSessionId || !ws) return
+      if (isExecuting && !text && !pendingFiles.length) {
+        ws.send(JSON.stringify({ type: 'stop_task', sessionId: activeSessionId }))
+        delete localBusyUntil[activeSessionId]
+        delete busyBySession[activeSessionId]
+        isExecuting = false
+        stopTranscriptPoll()
+        requestTranscript(activeSessionId)
+      } else if (text || pendingFiles.length) {
+        if (isExecuting) {
+          ws.send(JSON.stringify({ type: 'enqueue_prompt', sessionId: activeSessionId, prompt: text || '（附件）' }))
+          input.value = ''
+          pendingFiles = []
+          renderAttachPreview()
+          updateActionBtn()
+          return
+        }
+        const images = pendingFiles.filter(file => String(file.dataUrl || '').startsWith('data:image/'))
+        const extras = pendingFiles.filter(file => !String(file.dataUrl || '').startsWith('data:image/'))
+        const audio = extras.find(file => String(file.dataUrl || '').startsWith('data:audio/'))
+        ws.send(JSON.stringify({
+          type: 'send_prompt',
+          sessionId: activeSessionId,
+          prompt: text,
+          images: pendingFiles,
+          audio: audio || null
+        }))
+        appendLocalMessage('user', text || (images.length ? '（图片）' : '（附件）'), images.map(file => file.dataUrl))
+        isExecuting = true
+        busyBySession[activeSessionId] = true
+        localBusyUntil[activeSessionId] = Date.now() + 5000
+        input.value = ''
+        pendingFiles = []
+        renderAttachPreview()
+        updateActionBtn()
+        requestTranscript(activeSessionId)
+        startTranscriptPoll()
+      }
+    }
+
+    function handleEnqueue() {
+      const input = document.getElementById('promptInput')
+      const text = input.value.trim()
+      if (!text || !activeSessionId || !ws) return
+      ws.send(JSON.stringify({ type: 'enqueue_prompt', sessionId: activeSessionId, prompt: text }))
+      input.value = ''
+      updateActionBtn()
+    }
+
+    function sendQueueNow() {
+      if (!activeSessionId || !ws) return
+      const currentQueue = sessionQueues[activeSessionId] || []
+      if (currentQueue.length > 0) {
+        const first = currentQueue[0]
+        if (first && first.prompt) {
+          appendLocalMessage('user', first.prompt)
+        }
+      }
+      ws.send(JSON.stringify({ type: 'send_queue_now', sessionId: activeSessionId }))
+      isExecuting = true
+      busyBySession[activeSessionId] = true
+      localBusyUntil[activeSessionId] = Date.now() + 5000
+      updateActionBtn()
+      const btn = typeof document?.querySelector === 'function' ? document.querySelector('#queueBanner button') : null
+      if (btn) btn.textContent = '正在发送…'
+    }
+
+    function sessionDotKind(session) {
+      if (sessionBusy(session) || session.status === '执行中') return 'working'
+      if (session.unread) return 'unread'
+      if (session.isActive || session.status === '对话中') return 'talking'
+      return 'idle'
+    }
+
+    function sessionStatusLabel(session) {
+      if (sessionBusy(session) || session.status === '执行中') return '执行中'
+      if (session.status) return session.status
+      return session.isActive ? '对话中' : '就绪待命中'
+    }
+
+    function sessionMatchesMobileFilter(session, filter) {
+      if (filter === 'unread') return Boolean(session.unread)
+      if (filter === 'open') return Boolean(session.isActive) || session.status === '对话中' || session.status === '执行中'
+      if (filter === 'pinned') return Boolean(session.pinned)
+      if (filter === 'recent') {
+        const raw = sessionTime(session)
+        const ms = raw > 0 && raw < 100_000_000_000 ? raw * 1000 : raw
+        const now = Date.now()
+        return ms > 0 && ms <= now && now - ms < 24 * 60 * 60 * 1000
+      }
+      return true
+    }
+
+    function setSessionFilter(filter) {
+      sessionFilter = filter || 'all'
+      const buttons = document.querySelectorAll('#drawerFilters [data-filter]')
+      buttons.forEach(button => {
+        button.classList.toggle('active', button.getAttribute('data-filter') === sessionFilter)
+      })
+      renderDrawer()
+    }
+
+    function visibleRailProjects() {
+      const needle = String(document.getElementById('drawerSearch')?.value || '').trim().toLowerCase()
+      const filtering = Boolean(needle) || sessionFilter !== 'all'
+      return railProjects
+        .map(project => {
+          const sessionsInProject = (project.sessions || []).filter(session => {
+            if (!sessionMatchesMobileFilter(session, sessionFilter)) return false
+            if (!needle) return true
+            return `${session.title || ''} ${session.preview || ''} ${project.label || ''} ${session.gateway || project.gateway || ''} ${session.model || ''}`
+              .toLowerCase()
+              .includes(needle)
+          })
+          return { ...project, sessions: sessionsInProject }
+        })
+        .filter(project => project.sessions.length > 0 || !filtering)
+    }
+
+    function projectGlyph(name, color) {
+      const stroke = color || 'currentColor'
+      const icons = {
+        folder: '<path d="M3 7h6l2 2h10v10H3z"/><path d="M3 7V5h6l2 2"/>',
+        home: '<path d="M4 11 12 4l8 7"/><path d="M6 10v9h12v-9"/>',
+        rocket: '<path d="M12 3c4 3 6 7 6 11-2 0-4-.5-6-1.5C10 13 8 13.5 6 14c0-4 2-8 6-11z"/><path d="M9 16s.5 3 3 5c2.5-2 3-5 3-5"/>',
+        star: '<path d="M12 3 14.5 9H21l-5 4 2 7-6-4-6 4 2-7-5-4h6.5z"/>',
+        gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1 7 17M17 7l2.1-2.1"/>',
+        code: '<path d="m8 8-4 4 4 4M16 8l4 4-4 4"/>',
+        globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/>',
+        terminal: '<path d="M4 6h16v12H4z"/><path d="m7 10 3 2-3 2M12 14h5"/>',
+        database: '<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/>',
+        cloud: '<path d="M7 17h10a4 4 0 0 0 0-8 6 6 0 0 0-11 2A3.5 3.5 0 0 0 7 17z"/>',
+        bug: '<path d="M8 9h8v7a4 4 0 0 1-8 0z"/><path d="M12 5v4M7 7l-2-2M17 7l2-2M6 13H4M20 13h-2"/>',
+        flame: '<path d="M12 3s5 5 5 9a5 5 0 0 1-10 0c0-2 2-4 3-5 0 3 2 3 2 1z"/>'
+      }
+      return `<svg class="project-glyph" viewBox="0 0 24 24" fill="none" stroke="${stroke}" stroke-width="1.8" stroke-linejoin="round">${icons[name] || icons.folder}</svg>`
+    }
+
+    function renderDrawer() {
+      const queued = Object.values(currentQueues).reduce((n, items) => n + (items ? items.length : 0), 0)
+      document.getElementById('drawerCount').textContent = `${sessions.length} 个会话`
+      document.getElementById('drawerMeta').textContent = queued ? `消息队列 ${queued} 条` : '按项目分组 · 按新鲜度排序'
+      const list = document.getElementById('drawerList')
+      const projects = visibleRailProjects()
+      if (!projects.length) {
+        list.innerHTML = '<div class="session-row">暂无会话</div>'
+        return
+      }
+      list.innerHTML = projects.map(project => {
+        const color = project.color || '#ece5d8'
+        const cards = (project.sessions || []).map(s => {
+          const queue = currentQueues[s.id] || []
+          const busy = sessionBusy(s)
+          const kind = sessionDotKind(s)
+          const label = sessionStatusLabel(s)
+          const active = s.id === activeSessionId ? ' active' : ''
+          const arc = busy ? '<span class="running-arc" aria-hidden="true"></span>' : ''
+          return `<div class="session-row${busy ? ' busy' : ''}${active}" style="--codex-project-color:${escapeHtml(s.color || color)}" onclick="selectSession('${s.id}', true); toggleDrawer(false)">
+          ${arc}
+          <div class="bg-top">
+            <div class="bg-title">${escapeHtml(s.title || '未命名')}</div>
+            <span class="status-dot ${kind}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}"></span>
+          </div>
+          <div class="bg-meta">
+            <span>${escapeHtml(s.gateway || project.gateway || '网关')} · ${escapeHtml(s.model || '模型未知')}</span>
+            <span>${queue.length ? `队列 ${queue.length}` : ''}</span>
+          </div>
+        </div>`
+        }).join('')
+        return `<section class="project-group">
+          <div class="project-head">
+            <div class="project-label">${projectGlyph(project.icon || (project.pinnedSection ? 'star' : 'folder'), color)}<span>${escapeHtml(project.label || '项目')}</span></div>
+            <div class="project-count">${project.sessions.length}${project.gateway ? ' · ' + escapeHtml(project.gateway) : ''}</div>
+          </div>
+          ${cards}
+        </section>`
+      }).join('')
+    }
+
+    function stopSession(id) {
+      if (!ws) return
+      ws.send(JSON.stringify({ type: 'stop_task', sessionId: id }))
+    }
+
+    function toggleDrawer(open) {
+      document.getElementById('drawerPanel').classList.toggle('open', open)
+      document.getElementById('drawerBackdrop').classList.toggle('open', open)
+    }
+
+    function openLightbox(src) {
+      document.getElementById('lightboxImg').src = src
+      document.getElementById('lightbox').style.display = 'flex'
+    }
+
+    function closeLightbox() {
+      document.getElementById('lightbox').style.display = 'none'
+    }
+
+    function renderAttachPreview() {
+      const box = document.getElementById('attachPreview')
+      if (!box) return
+      box.className = pendingFiles.length ? 'show' : ''
+      box.innerHTML = pendingFiles.map((file, index) => `<span class="chip">${escapeHtml(file.name || 'file')} <button type="button" onclick="pendingFiles.splice(${index},1); renderAttachPreview()">×</button></span>`).join('')
+    }
+
+    function addPendingFile(file) {
+      if (!file) return
+      const reader = new FileReader()
+      reader.onload = () => {
+        pendingFiles.push({ name: file.name || 'file', dataUrl: String(reader.result || '') })
+        renderAttachPreview()
+      }
+      reader.readAsDataURL(file)
+    }
+
+    function applyModels(choices) {
+      modelChoices = Array.isArray(choices) ? choices : []
+      renderModelList()
+    }
+
+    function renderModelList() {
+      const list = document.getElementById('modelList')
+      if (!list) return
+      const needle = String(document.getElementById('modelSearch')?.value || '').trim().toLowerCase()
+      const rows = modelChoices.filter(choice => {
+        if (!needle) return true
+        return `${choice.label || ''} ${choice.model || ''} ${choice.provider || ''}`.toLowerCase().includes(needle)
+      })
+      list.innerHTML = rows.map(choice => `<button type="button" onclick="chooseModel('${String(choice.provider || '').replace(/'/g, '')}', '${String(choice.model || '').replace(/'/g, '')}')">${escapeHtml(choice.label || choice.model)}</button>`).join('') || '<div class="act">没有匹配的模型</div>'
+    }
+
+    function chooseModel(provider, model) {
+      if (!activeSessionId || !ws) return
+      ws.send(JSON.stringify({ type: 'set_model', sessionId: activeSessionId, provider, model }))
+      const btn = document.getElementById('modelBtn')
+      if (btn) btn.textContent = model
+      const panel = document.getElementById('modelPanel')
+      if (panel) panel.className = ''
+    }
+
+    function switchSessionBy(delta) {
+      if (!sessions.length) return
+      const ranked = [...sessions].sort((a, b) => sessionTime(b) - sessionTime(a))
+      const current = Math.max(0, ranked.findIndex(session => session.id === activeSessionId))
+      const next = ranked[(current + delta + ranked.length) % ranked.length]
+      if (next?.id && next.id !== activeSessionId) selectSession(next.id, true)
+    }
+
+    function animateSessionSwitch(delta) {
+      const card = document.getElementById('focusCard')
+      if (!card || !card.classList) {
+        switchSessionBy(delta)
+        return
+      }
+      card.classList.remove('slide-left', 'slide-right')
+      card.classList.add(delta > 0 ? 'slide-left' : 'slide-right')
+      setTimeout(() => {
+        switchSessionBy(delta)
+        card.classList.remove('slide-left', 'slide-right')
+      }, 180)
+    }
+
+    function touchFromComposer(event) {
+      const node = event.target
+      if (!node) return false
+      if (typeof node.closest === 'function') {
+        return Boolean(node.closest('.composer, textarea, input, #drawerPanel, #lightbox'))
+      }
+      const tag = String(node.tagName || '').toLowerCase()
+      return tag === 'textarea' || tag === 'input'
+    }
+
+    function onTouchStart(event) {
+      if (touchFromComposer(event)) {
+        touchStartX = 0
+        touchStartY = 0
+        return
+      }
+      const point = event.changedTouches?.[0]
+      touchStartX = point?.clientX || 0
+      touchStartY = point?.clientY || 0
+    }
+
+    function onTouchEnd(event) {
+      if (!touchStartX && !touchStartY) return
+      const point = event.changedTouches?.[0]
+      const dx = (point?.clientX || 0) - touchStartX
+      const dy = (point?.clientY || 0) - touchStartY
+      touchStartX = 0
+      touchStartY = 0
+      if (Math.abs(dx) < 140 || Math.abs(dx) < Math.abs(dy) * 1.8) return
+      animateSessionSwitch(dx < 0 ? 1 : -1)
+    }
+
+    async function toggleVoice() {
+      const btn = document.getElementById('voiceBtn')
+      const Speech = window.SpeechRecognition || window.webkitSpeechRecognition
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.stop()
+        return
+      }
+      if (Speech) {
+        const rec = new Speech()
+        rec.lang = 'zh-CN'
+        rec.onresult = event => {
+          const said = event.results?.[0]?.[0]?.transcript || ''
+          if (said) document.getElementById('promptInput').value = (document.getElementById('promptInput').value + ' ' + said).trim()
+          updateActionBtn()
+        }
+        rec.start()
+        if (btn) btn.classList.add('rec')
+        rec.onend = () => { if (btn) btn.classList.remove('rec') }
+        return
+      }
+      if (!navigator.mediaDevices?.getUserMedia) return
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      mediaChunks = []
+      mediaRecorder = new MediaRecorder(stream)
+      mediaRecorder.ondataavailable = event => { if (event.data.size) mediaChunks.push(event.data) }
+      mediaRecorder.onstop = () => {
+        stream.getTracks().forEach(track => track.stop())
+        const blob = new Blob(mediaChunks, { type: mediaRecorder.mimeType || 'audio/webm' })
+        addPendingFile(new File([blob], 'voice.webm', { type: blob.type }))
+        mediaRecorder = null
+        if (btn) btn.className = 'icon-mini'
+      }
+      mediaRecorder.start()
+      if (btn) btn.className = 'icon-mini rec'
+    }
+
+    document.getElementById('promptInput').addEventListener('input', () => {
+      updateActionBtn()
+      const box = document.getElementById('promptInput')
+      if (!box || !box.style) return
+      box.style.height = 'auto'
+      box.style.height = `${Math.min(box.scrollHeight || 0, 120)}px`
+    })
+    document.getElementById('promptInput').addEventListener('keydown', event => {
+      if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault()
+        handleMainAction()
+      }
+    })
+    document.getElementById('promptInput').addEventListener('paste', event => {
+      const items = event.clipboardData?.items || []
+      for (const item of items) {
+        if (item.type && item.type.indexOf('image/') === 0) {
+          event.preventDefault()
+          addPendingFile(item.getAsFile())
+        }
+      }
+    })
+    document.getElementById('refreshBtn').addEventListener('click', () => {
+      if (activeSessionId && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'get_transcript', sessionId: activeSessionId }))
+      }
+    })
+    document.getElementById('attachBtn')?.addEventListener('click', () => document.getElementById('fileInput')?.click())
+    document.getElementById('fileInput')?.addEventListener('change', event => {
+      const files = event.target.files || []
+      for (const file of files) addPendingFile(file)
+      event.target.value = ''
+    })
+    document.getElementById('voiceBtn')?.addEventListener('click', () => { void toggleVoice() })
+    document.getElementById('modelBtn')?.addEventListener('click', () => {
+      const panel = document.getElementById('modelPanel')
+      if (!panel) return
+      const open = panel.className !== 'show'
+      panel.className = open ? 'show' : ''
+      if (open && activeSessionId && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'get_models', sessionId: activeSessionId }))
+      }
+    })
+    document.getElementById('modelSearch')?.addEventListener('input', renderModelList)
+    const transcriptBox = document.getElementById('transcript')
+    if (transcriptBox && typeof transcriptBox.addEventListener === 'function') {
+      transcriptBox.addEventListener('scroll', () => {
+        if (transcriptBox.scrollTop < 40 && !isEarlierLoading && sessionHasMoreEarlier[activeSessionId] !== false) {
+          requestEarlierMessages()
+        }
+      }, { passive: true })
+    }
+    document.addEventListener('touchstart', onTouchStart, { passive: true })
+    document.addEventListener('touchend', onTouchEnd)
+
+    if (typeof window === 'undefined' || !window.__OVERLOOK_SKIP_CONNECT) connect()
+    window.applySnapshot = applySnapshot
+    window.applyBusyUpdate = applyBusyUpdate
+    window.applyActivityUpdate = applyActivityUpdate
+    window.selectSession = selectSession
+    window.toggleDrawer = toggleDrawer
+    window.handleEnqueue = handleEnqueue
+    window.handleMainAction = handleMainAction
+    window.updateActionBtn = updateActionBtn
+    window.renderTranscript = renderTranscript
+    window.applyTranscriptUpdate = applyTranscriptUpdate
+    window.requestEarlierMessages = requestEarlierMessages
+    window.appendLocalMessage = appendLocalMessage
+    window.sendQueueNow = sendQueueNow
+    window.stopActivityItem = stopActivityItem
+    window.openLightbox = openLightbox
+    window.closeLightbox = closeLightbox
+    window.renderAttachPreview = renderAttachPreview
+    window.chooseModel = chooseModel
+    Object.defineProperty(window, 'activeSessionId', { get: () => activeSessionId, set: v => { activeSessionId = v } })
+    Object.defineProperty(window, 'isExecuting', { get: () => isExecuting, set: v => { isExecuting = v } })
+    Object.defineProperty(window, 'ws', { get: () => ws, set: v => { ws = v } })
+  </script>
+</body>
+</html>

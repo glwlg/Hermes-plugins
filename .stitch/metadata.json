@@ -1,0 +1,53 @@
+{
+  "projectId": "6321737598646675642",
+  "title": "Agent监控室重构",
+  "deviceType": "DESKTOP",
+  "Last Sync Time": "2026-09-04T12:40:00.000Z",
+  "screens": {
+    "6dbe3b7a764a44629ab50d6618d5a889": {
+      "id": "6dbe3b7a764a44629ab50d6618d5a889",
+      "label": "Agent 动态多会话监控室",
+      "sourceScreen": "projects/6321737598646675642/screens/6dbe3b7a764a44629ab50d6618d5a889",
+      "width": 2560,
+      "height": 2048,
+      "canvasPosition": { "x": 1344, "y": 1280 },
+      "visible": true
+    },
+    "95ba0934fa4a496aa3bf4e56f438df89": {
+      "id": "95ba0934fa4a496aa3bf4e56f438df89",
+      "label": "Agent 多会话监控室 (轻量交互版)",
+      "sourceScreen": "projects/6321737598646675642/screens/95ba0934fa4a496aa3bf4e56f438df89",
+      "width": 780,
+      "height": 2506,
+      "deviceType": "MOBILE",
+      "visible": true
+    },
+    "3967ee3205194f5d879f87bbb2727e16": {
+      "id": "3967ee3205194f5d879f87bbb2727e16",
+      "label": "Agent 多会话监控室 (移动端)",
+      "sourceScreen": "projects/6321737598646675642/screens/3967ee3205194f5d879f87bbb2727e16",
+      "width": 780,
+      "height": 2134,
+      "deviceType": "MOBILE",
+      "visible": false
+    },
+    "1b628bdc65d94489ac61f5b3bf7a8cae": {
+      "id": "1b628bdc65d94489ac61f5b3bf7a8cae",
+      "label": "Agent 多会话监控室重构",
+      "sourceScreen": "projects/6321737598646675642/screens/1b628bdc65d94489ac61f5b3bf7a8cae",
+      "width": 2560,
+      "height": 2048,
+      "canvasPosition": { "x": 576, "y": 0 },
+      "visible": false
+    },
+    "60855ba72ade4b1fa6c89e08e3032cca": {
+      "id": "60855ba72ade4b1fa6c89e08e3032cca",
+      "label": "Agent 多会话监控室 (亮色版)",
+      "sourceScreen": "projects/6321737598646675642/screens/60855ba72ade4b1fa6c89e08e3032cca",
+      "width": 2560,
+      "height": 2048,
+      "canvasPosition": { "x": 0, "y": 1280 },
+      "visible": false
+    }
+  }
+}

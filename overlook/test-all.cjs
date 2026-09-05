@@ -23,7 +23,9 @@ const checks = [
   ['sidebar polish', [path.join(root, 'test-sidebar-polish.cjs')]],
   ['inbox surfaces', [path.join(root, 'test-inbox-surfaces.cjs')]],
   ['install link', [path.join(root, 'test-install-link.cjs')]],
-  ['chrome palette', [path.join(root, 'test-chrome-palette.cjs')]]
+  ['chrome palette', [path.join(root, 'test-chrome-palette.cjs')]],
+  ['mobile rail', [path.join(root, 'test-mobile-rail.cjs')]],
+  ['mobile monitor', [path.join(root, 'test-mobile-monitor.cjs')]]
 ]
 
 for (const [label, args] of checks) {

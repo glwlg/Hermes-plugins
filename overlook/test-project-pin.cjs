@@ -23,11 +23,14 @@ function extractFunction(name) {
 
 // --- prefs normalization keeps pinnedProjectKeys + projectAppearance -------
 
-const prefNames = ['normalizeProjectAppearance', 'normalizeGatewaySessionPreferences']
+const prefNames = ['normalizeStringKeyList', 'normalizeMonitorLayout', 'normalizeProjectAppearance', 'normalizeGatewaySessionPreferences']
 const prefContext = {
   DEFAULT_GATEWAY_SESSION_PREFERENCES: {
     collapsedKeys: [],
     hideScheduled: true,
+    monitorHiddenKeys: [],
+    monitorLayout: 'tile',
+    monitorParkedKeys: [],
     profileScope: 'default',
     search: '',
     pinnedProjectKeys: [],
@@ -35,7 +38,9 @@ const prefContext = {
   },
   PROFILE_SCOPE_ALL: 'all',
   PROFILE_SCOPE_DEFAULT: 'default',
-  HIDE_SCHEDULED_SESSIONS_DEFAULT: true
+  HIDE_SCHEDULED_SESSIONS_DEFAULT: true,
+  MONITOR_LAYOUTS: ['tile', 'compact', 'list'],
+  MONITOR_KEY_LIST_MAX: 200
 }
 vm.createContext(prefContext)
 vm.runInContext(

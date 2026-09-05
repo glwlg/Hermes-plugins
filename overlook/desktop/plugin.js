@@ -107,9 +107,10 @@ const MODERN_ICON_STROKE = '1.8'
 const GATEWAY_SESSIONS_KEY = ['overlook', 'gateway-sessions']
 const MONITOR_ROUTE = '/overlook/monitor'
 const MONITOR_QUERY_KEY = ['overlook', 'session-monitor']
-const MONITOR_SESSION_LIMIT = 4
-const MONITOR_TRANSCRIPT_LIMIT = 48
+const MONITOR_TRANSCRIPT_LIMIT = 120
 const MONITOR_REFRESH_MS = 2_000
+const MONITOR_LAYOUTS = ['tile', 'compact', 'list']
+const MONITOR_KEY_LIST_MAX = 200
 const MONITOR_IMAGE_MAX_BYTES = 25 * 1024 * 1024
 const MONITOR_IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp,image/bmp'
 const MONITOR_IMAGE_MIME_BY_EXTENSION = {
@@ -151,12 +152,54 @@ const SESSION_FRESHNESS_EVENT_TYPES = new Set([
   'session.title',
   'sessions.changed'
 ])
+const MOBILE_TRANSCRIPT_EVENT_TYPES = new Set([
+  'message.start',
+  'message.delta',
+  'message.interim',
+  'message.complete',
+  'thinking.delta',
+  'reasoning.delta',
+  'reasoning.available',
+  'tool.start',
+  'tool.progress',
+  'tool.complete',
+  'status.update',
+  'todo.updated'
+])
+const MOBILE_ACTIVITY_EVENT_TYPES = new Set([
+  'subagent.spawn_requested',
+  'subagent.start',
+  'subagent.thinking',
+  'subagent.tool',
+  'subagent.progress',
+  'subagent.complete',
+  'todo.updated',
+  'tool.start',
+  'tool.progress',
+  'tool.complete',
+  'message.complete'
+])
+const MOBILE_BACKGROUND_REFRESH_EVENT_TYPES = new Set([
+  'tool.complete',
+  'message.complete'
+])
+const MOBILE_ACTIVITY_TERMINAL_LINGER_MS = 8_000
+const MOBILE_BACKGROUND_POLL_MS = 5_000
+const MOBILE_SNAPSHOT_EVENT_TYPES = new Set([
+  'sessions.changed',
+  'session.title',
+  'session.info',
+  'session.reclaimed'
+])
 const PATCHABLE_SESSION_EVENT_TYPES = new Set(['message.complete', 'message.start'])
 const GATEWAY_EVENT_REFRESH_DEBOUNCE_MS = 900
 const RECENT_SESSION_WINDOW_MS = 24 * 60 * 60_000
 const DEFAULT_GATEWAY_SESSION_PREFERENCES = {
   collapsedKeys: [],
   hideScheduled: HIDE_SCHEDULED_SESSIONS_DEFAULT,
+  monitorHiddenKeys: [],
+  monitorLayout: 'tile',
+  monitorParkedKeys: [],
   pinnedProjectKeys: [],
   profileScope: PROFILE_SCOPE_DEFAULT,
   projectAppearance: {},
@@ -169,10 +212,965 @@ const DEFAULT_GATEWAY_SESSION_PREFERENCES = {
 let gatewaySessionStorage = null
 let gatewaySessionStorageOwner = null
 let monitorWorkspaceClose = null
+let mobileBridgeWs = null
+let mobileBridgeTimer = null
+let mobileWatchedSessionIds = new Set()
+const mobileRuntimeToStored = new Map()
+const mobileStoredToRuntime = new Map()
+const mobileBusyByStoredId = new Map()
+const mobileTurnCompleteTimers = new Map()
+const lastSentTranscriptBySession = new Map()
+const inflightUserPromptBySession = new Map()
+const mobileActivityByStoredId = new Map()
+const mobileActivityExpiryTimers = new Map()
+const mobileBackgroundPollTimers = new Map()
+const mobileBackgroundRefreshInFlight = new Set()
+
+function rememberMobileSessionRuntime(storedId, runtimeId) {
+  const stored = String(storedId || '').trim()
+  const runtime = String(runtimeId || '').trim()
+  if (!stored || !runtime || stored === runtime) return
+  mobileRuntimeToStored.set(runtime, stored)
+  mobileStoredToRuntime.set(stored, runtime)
+  mobileRuntimeToStored.set(stored, stored)
+}
+
+function canonicalMobileSessionId(sessionId) {
+  const id = String(sessionId || '').trim()
+  if (!id) return ''
+  return mobileRuntimeToStored.get(id) || id
+}
+
+function collectMobileBusyByStored() {
+  const map = {}
+  for (const [id, busy] of mobileBusyByStoredId) {
+    if (busy) map[id] = true
+  }
+  try {
+    const raw = host?.state?.busyBySession?.get?.()
+    if (raw && typeof raw === 'object') {
+      for (const [runtimeId, busy] of Object.entries(raw)) {
+        if (!busy) continue
+        const stored = canonicalMobileSessionId(runtimeId)
+        if (stored) map[stored] = true
+      }
+    }
+  } catch {}
+  return map
+}
+
+function pushMobileBusyUpdate(sessionId) {
+  if (!mobileBridgeWs || mobileBridgeWs.readyState !== WebSocket.OPEN) return
+  const busyBySession = collectMobileBusyByStored()
+  const id = canonicalMobileSessionId(sessionId)
+  mobileBridgeWs.send(JSON.stringify({
+    type: 'busy_update',
+    sessionId: id || '',
+    busy: Boolean(id && busyBySession[id]),
+    busyBySession
+  }))
+}
+
+function markMobileSessionBusy(sessionId, busy) {
+  const id = canonicalMobileSessionId(sessionId)
+  if (!id) return
+  const next = Boolean(busy)
+  if (mobileBusyByStoredId.get(id) === next) return
+  mobileBusyByStoredId.set(id, next)
+  pushMobileBusyUpdate(id)
+  scheduleMobileBridgeSnapshot()
+}
+
+function noteMobileTurnActivity(sessionId) {
+  const id = canonicalMobileSessionId(sessionId)
+  if (!id) return
+  const timer = mobileTurnCompleteTimers.get(id)
+  if (timer) {
+    clearTimeout(timer)
+    mobileTurnCompleteTimers.delete(id)
+  }
+  markMobileSessionBusy(id, true)
+}
+
+function noteMobileTurnComplete(sessionId) {
+  const id = canonicalMobileSessionId(sessionId)
+  if (!id) return
+  inflightUserPromptBySession.delete(id)
+  const prev = mobileTurnCompleteTimers.get(id)
+  if (prev) clearTimeout(prev)
+  const timer = setTimeout(() => {
+    mobileTurnCompleteTimers.delete(id)
+    markMobileSessionBusy(id, false)
+    const queue = $monitorMessageQueueBySession.get()[id] || []
+    if (queue.length > 0) {
+      void autoFlushNextQueuedPrompt(id)
+    }
+  }, 600)
+  mobileTurnCompleteTimers.set(id, timer)
+}
+
+function mobileEventSessionId(event) {
+  const payload = event?.payload && typeof event.payload === 'object' ? event.payload : null
+  const raw = String(
+    payload?.stored_session_id
+    || event?.stored_session_id
+    || event?.session_id
+    || event?.sessionId
+    || payload?.session_id
+    || payload?.sessionId
+    || ''
+  ).trim()
+  return canonicalMobileSessionId(raw)
+}
+
+function mobileActivityState(value, fallback = 'running') {
+  const status = String(value || '').trim().toLowerCase()
+  if (['failed', 'error', 'timeout', 'interrupted', 'cancelled', 'canceled'].includes(status)) return 'failed'
+  if (['completed', 'complete', 'done', 'exited', 'success'].includes(status)) return 'done'
+  if (['queued', 'pending', 'waiting'].includes(status)) return 'queued'
+  return status === 'running' || status === 'active' || status === 'in_progress' ? 'running' : fallback
+}
+
+function mobileActivityText(value, max = 180) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max)
+}
+
+function mobileActivityBucket(sessionId) {
+  const id = canonicalMobileSessionId(sessionId)
+  if (!id) return null
+  let bucket = mobileActivityByStoredId.get(id)
+  if (!bucket) {
+    bucket = new Map()
+    mobileActivityByStoredId.set(id, bucket)
+  }
+  return bucket
+}
+
+function mobileActivityItems(sessionId) {
+  const id = canonicalMobileSessionId(sessionId)
+  const bucket = id ? mobileActivityByStoredId.get(id) : null
+  if (!bucket) return []
+  const now = Date.now()
+  for (const [key, item] of bucket) {
+    if (item.expiresAt && item.expiresAt <= now) bucket.delete(key)
+  }
+  if (!bucket.size) {
+    mobileActivityByStoredId.delete(id)
+    return []
+  }
+  const rank = { todo: 0, subagent: 1, background: 2 }
+  return [...bucket.values()]
+    .sort((a, b) => (rank[a.kind] ?? 9) - (rank[b.kind] ?? 9) || Number(a.updatedAt || 0) - Number(b.updatedAt || 0))
+    .slice(0, 12)
+    .map(({ expiresAt, ...item }) => item)
+}
+
+function scheduleMobileActivityExpiry(sessionId) {
+  const id = canonicalMobileSessionId(sessionId)
+  if (!id) return
+  const prior = mobileActivityExpiryTimers.get(id)
+  if (prior) clearTimeout(prior)
+  mobileActivityExpiryTimers.delete(id)
+  const bucket = mobileActivityByStoredId.get(id)
+  if (!bucket) return
+  const now = Date.now()
+  let nextExpiry = 0
+  for (const item of bucket.values()) {
+    const expiry = Number(item.expiresAt) || 0
+    if (expiry > now && (!nextExpiry || expiry < nextExpiry)) nextExpiry = expiry
+  }
+  if (!nextExpiry) return
+  const timer = setTimeout(() => {
+    mobileActivityExpiryTimers.delete(id)
+    mobileActivityItems(id)
+    pushMobileActivityUpdate(id)
+    scheduleMobileActivityExpiry(id)
+  }, Math.max(0, nextExpiry - now) + 25)
+  mobileActivityExpiryTimers.set(id, timer)
+}
+
+function pushMobileActivityUpdate(sessionId) {
+  const id = canonicalMobileSessionId(sessionId)
+  if (!id || !mobileWatchedSessionIds.has(id) || !mobileBridgeWs || mobileBridgeWs.readyState !== WebSocket.OPEN) return
+  mobileBridgeWs.send(JSON.stringify({
+    type: 'activity_update',
+    sessionId: id,
+    items: mobileActivityItems(id)
+  }))
+}
+
+function writeMobileActivityItems(sessionId, kind, nextItems) {
+  const id = canonicalMobileSessionId(sessionId)
+  const bucket = mobileActivityBucket(id)
+  if (!bucket) return
+  const now = Date.now()
+  const incoming = new Map()
+  for (const raw of Array.isArray(nextItems) ? nextItems : []) {
+    const itemId = mobileActivityText(raw?.id, 120)
+    const title = mobileActivityText(raw?.title, 180)
+    if (!itemId || !title) continue
+    const state = mobileActivityState(raw?.state)
+    const details = raw?.fullCommand || raw?.output || raw?.detail || title || ''
+    incoming.set(`${kind}:${itemId}`, {
+      detail: mobileActivityText(raw?.detail, 120),
+      id: itemId,
+      kind,
+      state,
+      title,
+      fullCommand: raw?.fullCommand,
+      output: raw?.output,
+      details,
+      updatedAt: now,
+      ...(state === 'done' || state === 'failed' ? { expiresAt: now + MOBILE_ACTIVITY_TERMINAL_LINGER_MS } : {})
+    })
+  }
+  for (const key of [...bucket.keys()]) {
+    if (key.startsWith(`${kind}:`) && !incoming.has(key)) bucket.delete(key)
+  }
+  for (const [key, item] of incoming) bucket.set(key, item)
+  if (!bucket.size) mobileActivityByStoredId.delete(id)
+  pushMobileActivityUpdate(id)
+  scheduleMobileActivityExpiry(id)
+}
+
+function upsertMobileActivityItem(sessionId, raw) {
+  const id = canonicalMobileSessionId(sessionId)
+  const kind = String(raw?.kind || '').trim()
+  const itemId = mobileActivityText(raw?.id, 120)
+  const title = mobileActivityText(raw?.title, 180)
+  if (!id || !kind || !itemId || !title) return
+  const bucket = mobileActivityBucket(id)
+  if (!bucket) return
+  const now = Date.now()
+  const state = mobileActivityState(raw?.state)
+  const key = `${kind}:${itemId}`
+  const previous = bucket.get(key)
+  bucket.set(key, {
+    ...previous,
+    detail: mobileActivityText(raw?.detail, 120),
+    id: itemId,
+    kind,
+    state,
+    title,
+    updatedAt: now,
+    ...(state === 'done' || state === 'failed' ? { expiresAt: now + MOBILE_ACTIVITY_TERMINAL_LINGER_MS } : { expiresAt: undefined })
+  })
+  pushMobileActivityUpdate(id)
+  scheduleMobileActivityExpiry(id)
+}
+
+function mobileEventPayload(event) {
+  const payload = event?.payload
+  return payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}
+}
+
+function mobileSubagentActivity(event) {
+  const payload = mobileEventPayload(event)
+  const eventType = String(event?.type || '')
+  const index = Math.max(0, Number(payload.task_index) || 0)
+  const id = mobileActivityText(payload.subagent_id || `${payload.delegation_id || 'task'}:${index}`, 120)
+  const terminal = eventType === 'subagent.complete'
+  const state = mobileActivityState(payload.status, terminal ? 'done' : 'running')
+  const detail = terminal
+    ? (state === 'failed' ? '未完成' : '已完成')
+    : mobileActivityText(payload.tool_name || payload.tool_preview || (eventType === 'subagent.thinking' ? '思考中' : '运行中'), 120)
+  return {
+    id,
+    kind: 'subagent',
+    state,
+    title: mobileActivityText(payload.goal || `子代理 ${index + 1}`, 180),
+    detail
+  }
+}
+
+function mobileTodoActivities(event) {
+  const payload = mobileEventPayload(event)
+  let source = payload.todos ?? payload.result
+  if (typeof source === 'string') {
+    try { source = JSON.parse(source) } catch { source = [] }
+  }
+  if (source && typeof source === 'object' && !Array.isArray(source)) source = source.todos
+  if (!Array.isArray(source)) return []
+  return source.slice(0, 12).map((todo, index) => ({
+    id: mobileActivityText(todo?.id || `todo-${index}`, 120),
+    kind: 'todo',
+    state: mobileActivityState(todo?.status, 'running'),
+    title: mobileActivityText(todo?.content || todo?.title || todo?.text || `任务 ${index + 1}`, 180),
+    detail: ''
+  }))
+}
+
+function applyMobileActivityEvent(event, sessionId) {
+  const id = canonicalMobileSessionId(sessionId)
+  if (!id || !mobileWatchedSessionIds.has(id)) return
+  const type = String(event?.type || '')
+  if (type.startsWith('subagent.')) {
+    upsertMobileActivityItem(id, mobileSubagentActivity(event))
+  } else if (type === 'todo.updated') {
+    writeMobileActivityItems(id, 'todo', mobileTodoActivities(event))
+  }
+  if (MOBILE_BACKGROUND_REFRESH_EVENT_TYPES.has(type)) scheduleMobileBackgroundRefresh(id, 1500)
+}
+
+function scheduleMobileBackgroundRefresh(sessionId, delay = MOBILE_BACKGROUND_POLL_MS) {
+  const id = canonicalMobileSessionId(sessionId)
+  if (!id || !mobileWatchedSessionIds.has(id)) return
+  const prior = mobileBackgroundPollTimers.get(id)
+  if (prior) clearTimeout(prior)
+  const timer = setTimeout(() => {
+    mobileBackgroundPollTimers.delete(id)
+    void refreshMobileBackgroundActivity(id)
+  }, Math.max(0, Number(delay) || 0))
+  mobileBackgroundPollTimers.set(id, timer)
+}
+
+function extractLiveDomBackgroundActivities() {
+  if (typeof document === 'undefined') return []
+  const stack = document.querySelector("[data-slot='composer-status-stack']")
+  if (!stack) return []
+  const items = []
+  const rows = stack.querySelectorAll('.group\\/status-row')
+  rows.forEach((row, idx) => {
+    const textEl = row.querySelector('.truncate.leading-4') || row
+    const fullText = (textEl.getAttribute('title') || textEl.textContent || '').trim()
+    if (fullText) {
+      const isFailed = row.querySelector('.text-destructive') !== null
+      const isDone = row.querySelector('.text-emerald-500') !== null
+      const state = isFailed ? 'failed' : (isDone ? 'done' : 'running')
+      const firstLine = fullText.split('\n')[0].trim()
+      items.push({
+        id: `dom-task-${idx}`,
+        kind: 'background',
+        state,
+        title: firstLine || '后台任务',
+        detail: fullText !== firstLine ? fullText : '',
+        fullCommand: fullText,
+        details: fullText
+      })
+    }
+  })
+  return items
+}
+
+async function refreshMobileBackgroundActivity(sessionId) {
+  const id = canonicalMobileSessionId(sessionId)
+  if (!id || !mobileWatchedSessionIds.has(id) || mobileBackgroundRefreshInFlight.has(id)) return
+  mobileBackgroundRefreshInFlight.add(id)
+  let release = null
+  try {
+    const domTasks = extractLiveDomBackgroundActivities()
+    if (domTasks.length > 0) {
+      writeMobileActivityItems(id, 'background', domTasks)
+      scheduleMobileBackgroundRefresh(id)
+      return
+    }
+
+    const target = await resolveTargetSession(id)
+    if (!target || typeof host.requestProfile !== 'function') return
+    if (typeof host.retainProfile === 'function') release = await host.retainProfile(target.project.route)
+    let runtimeId = mobileStoredToRuntime.get(id)
+    if (!runtimeId || runtimeId === id) {
+      try {
+        runtimeId = await resolveMonitorRuntimeSessionId(target.project.route, target.session.id)
+      } catch {}
+    }
+    if (!runtimeId || runtimeId === id) return
+    rememberMobileSessionRuntime(target.session.id, runtimeId)
+    const response = await host.requestProfile(target.project.route, 'process.list', { session_id: runtimeId })
+    const processes = Array.isArray(response?.processes)
+      ? response.processes
+      : (Array.isArray(response?.result?.processes) ? response.result.processes : [])
+    const items = processes.map((process, index) => {
+      const command = String(process?.command || '').trim()
+      const firstLine = command.split('\n')[0].trim()
+      return {
+        id: mobileActivityText(process?.session_id || `process-${index}`, 120),
+        kind: 'background',
+        state: mobileActivityState(process?.status, 'running'),
+        title: firstLine || command || '后台任务',
+        detail: mobileActivityText(
+          process?.status === 'running'
+            ? `运行 ${Math.max(0, Number(process?.uptime_seconds) || 0)} 秒`
+            : (Number.isFinite(Number(process?.exit_code)) && Number(process.exit_code) !== 0 ? `退出码 ${process.exit_code}` : '已结束'),
+          120
+        ),
+        fullCommand: command || undefined,
+        output: typeof process?.output_tail === 'string' ? process.output_tail : undefined
+      }
+    })
+    writeMobileActivityItems(id, 'background', items)
+    if (items.some(item => item.state === 'running' || item.state === 'queued')) {
+      scheduleMobileBackgroundRefresh(id)
+    }
+  } catch {
+    // A transient or old-gateway process.list failure must not erase a live row.
+  } finally {
+    mobileBackgroundRefreshInFlight.delete(id)
+    try { release?.() } catch {}
+  }
+}
+
+async function stopMobileBackgroundActivity(sessionId, processId) {
+  const id = canonicalMobileSessionId(sessionId)
+  const target = await resolveTargetSession(id)
+  const process = mobileActivityText(processId, 120)
+  if (!id || !process || !target || typeof host.requestProfile !== 'function') return
+  const runtimeId = mobileStoredToRuntime.get(id)
+    || await resolveMonitorRuntimeSessionId(target.project.route, target.session.id)
+  await host.requestProfile(target.project.route, 'process.kill', { process_id: process, session_id: runtimeId })
+  await refreshMobileBackgroundActivity(id)
+}
+
+function resolveMobileImageSrc(path) {
+  const raw = String(path || '').trim()
+  if (!raw) return Promise.resolve('')
+  if (/^(?:data:|https?:)/i.test(raw)) return Promise.resolve(raw)
+  if (!resolveMobileImageSrc.cache) resolveMobileImageSrc.cache = new Map()
+  if (resolveMobileImageSrc.cache.has(raw)) return Promise.resolve(resolveMobileImageSrc.cache.get(raw) || '')
+  const read = typeof window !== 'undefined' ? window.hermesDesktop?.readFileDataUrl : null
+  if (typeof read !== 'function') {
+    resolveMobileImageSrc.cache.set(raw, '')
+    return Promise.resolve('')
+  }
+  return Promise.resolve(read(raw)).then(url => {
+    const src = /^(?:data:|https?:)/i.test(String(url || '').trim()) ? String(url).trim() : ''
+    resolveMobileImageSrc.cache.set(raw, src)
+    if (resolveMobileImageSrc.cache.size > 48) {
+      const first = resolveMobileImageSrc.cache.keys().next().value
+      resolveMobileImageSrc.cache.delete(first)
+    }
+    return src
+  }).catch(() => {
+    resolveMobileImageSrc.cache.set(raw, '')
+    return ''
+  })
+}
+
+async function resolveMobileMessageImages(paths) {
+  const list = Array.isArray(paths) ? paths : []
+  const out = []
+  for (const path of list) {
+    const src = await resolveMobileImageSrc(path)
+    if (src) out.push(src)
+  }
+  return out
+}
+
+async function pushMobileTranscript(sessionId, options) {
+  const id = canonicalMobileSessionId(sessionId)
+  if (!id || !mobileBridgeWs || mobileBridgeWs.readyState !== WebSocket.OPEN) return
+  const target = await resolveTargetSession(id)
+  if (!target) return
+  if (target.session?.runtime_id && target.session.runtime_id !== target.session.id) {
+    rememberMobileSessionRuntime(target.session.id, target.session.runtime_id)
+  }
+  const storedId = String(target.session.id || id).trim()
+  const raw = await fetchMonitorTranscript(target.project, target.session, options)
+  const inflight = inflightUserPromptBySession.get(storedId)
+  if (inflight && inflight.prompt && Array.isArray(raw)) {
+    const hasPrompt = raw.some(r => r.role === 'user' && (r.content === inflight.prompt || r.text === inflight.prompt))
+    if (!hasPrompt) {
+      raw.push({
+        id: `inflight-${storedId}-${inflight.timestamp}`,
+        role: 'user',
+        content: inflight.prompt,
+        text: inflight.prompt,
+        timestamp: Math.floor(inflight.timestamp / 1000)
+      })
+    } else {
+      inflightUserPromptBySession.delete(storedId)
+    }
+  }
+  const limit = options?.limit || 60
+  const msgs = monitorMobileMessages({ messages: raw }, target.session, limit)
+  const messages = []
+  for (const m of msgs) {
+    const parsed = extractMonitorMessageImages(m.text)
+    messages.push({
+      role: m.role || m.message?.role || 'assistant',
+      kind: m.kind || m.role || m.message?.role || 'assistant',
+      tool: m.tool || '',
+      text: parsed.cleanedText || m.text,
+      images: await resolveMobileMessageImages(parsed.imagePaths)
+    })
+  }
+
+  const prev = lastSentTranscriptBySession.get(storedId)
+  if (!options && Array.isArray(prev) && prev.length > 0 && messages.length >= prev.length) {
+    let diffIndex = -1
+    for (let i = 0; i < messages.length; i++) {
+      const a = messages[i]
+      const b = prev[i]
+      if (!b || a.text !== b.text || a.kind !== b.kind || a.tool !== b.tool || a.role !== b.role || (a.images?.length || 0) !== (b.images?.length || 0)) {
+        diffIndex = i
+        break
+      }
+    }
+    if (diffIndex >= 0 && diffIndex >= messages.length - 8) {
+      lastSentTranscriptBySession.set(storedId, messages)
+      mobileBridgeWs.send(JSON.stringify({
+        type: 'transcript_update',
+        sessionId: storedId,
+        mode: 'tail',
+        startIndex: diffIndex,
+        messages: messages.slice(diffIndex),
+        totalCount: messages.length
+      }))
+      return
+    }
+  }
+
+  lastSentTranscriptBySession.set(storedId, messages)
+  mobileBridgeWs.send(JSON.stringify({
+    type: 'transcript_update',
+    sessionId: storedId,
+    mode: 'full',
+    messages,
+    totalCount: messages.length,
+    hasMore: raw.length >= limit
+  }))
+}
+
+async function pushEarlierMobileTranscript(sessionId, offset, limit) {
+  const id = canonicalMobileSessionId(sessionId)
+  if (!id || !mobileBridgeWs || mobileBridgeWs.readyState !== WebSocket.OPEN) return
+  const target = await resolveTargetSession(id)
+  if (!target) return
+  const storedId = String(target.session.id || id).trim()
+  const raw = await fetchMonitorTranscript(target.project, target.session, { offset, limit, order: 'latest' })
+  const msgs = monitorMobileMessages({ messages: raw }, target.session, limit, { isEarlier: true })
+  const messages = []
+  for (const m of msgs) {
+    const parsed = extractMonitorMessageImages(m.text)
+    messages.push({
+      role: m.role || m.message?.role || 'assistant',
+      kind: m.kind || m.role || m.message?.role || 'assistant',
+      tool: m.tool || '',
+      text: parsed.cleanedText || m.text,
+      images: await resolveMobileMessageImages(parsed.imagePaths)
+    })
+  }
+  mobileBridgeWs.send(JSON.stringify({
+    type: 'transcript_update',
+    sessionId: storedId,
+    mode: 'prepend',
+    offset,
+    hasMore: raw.length >= limit,
+    messages
+  }))
+}
+
+function scheduleMobileTranscriptPush(sessionId) {
+  const id = canonicalMobileSessionId(sessionId)
+  if (!id) return
+  if (scheduleMobileTranscriptPush.timers?.has(id)) return
+  if (!scheduleMobileTranscriptPush.timers) scheduleMobileTranscriptPush.timers = new Map()
+  const timer = setTimeout(() => {
+    scheduleMobileTranscriptPush.timers.delete(id)
+    void pushMobileTranscript(id)
+  }, 120)
+  scheduleMobileTranscriptPush.timers.set(id, timer)
+}
+
+async function autoFlushNextQueuedPrompt(sessionId) {
+  const id = canonicalMobileSessionId(sessionId)
+  if (!id) return
+  const currentAll = $monitorMessageQueueBySession.get()
+  const queue = currentAll[id] || []
+  if (!queue.length) return
+  const first = queue[0]
+  const target = await resolveTargetSession(id)
+  if (!target) return
+  $monitorMessageQueueBySession.set({
+    ...currentAll,
+    [id]: queue.slice(1)
+  })
+  syncMobileBridgeSnapshot()
+  try {
+    noteMobileTurnActivity(id)
+    if (first.prompt) {
+      inflightUserPromptBySession.set(id, {
+        prompt: first.prompt,
+        images: first.images || [],
+        timestamp: Date.now()
+      })
+    }
+    await submitMonitorPrompt({ images: first.images || [], project: target.project, prompt: first.prompt, session: target.session })
+    pluginQueryClient?.invalidateQueries?.({ queryKey: [...MONITOR_QUERY_KEY, routeKey(target.project.route), target.session.id] })
+    pluginQueryClient?.invalidateQueries?.({ queryKey: GATEWAY_SESSIONS_KEY })
+    syncMobileBridgeSnapshot()
+    await pushMobileTranscript(id)
+    scheduleMobileTranscriptPush(id)
+  } catch (err) {
+    console.error('[Overlook Desktop] Failed to flush queued message:', err)
+    noteMobileTurnComplete(id)
+  }
+}
+
+async function resolveTargetSession(sessionId) {
+  const id = canonicalMobileSessionId(sessionId)
+  let groups = readCachedGatewaySessionGroups()
+  if (!groups.length) {
+    try {
+      const fetched = await fetchGatewaySessionGroups(PROFILE_SCOPE_ALL, $gatewaySessionLimit.get())
+      if (fetched?.groups?.length) groups = fetched.groups
+    } catch {}
+  }
+  for (const g of (groups || [])) {
+    const hit = g.sessions?.find(s => s.id === id || s.id === sessionId || s.session_id === id || s.runtime_id === id)
+    if (hit) {
+      return { project: { key: g.projectKey || g.key, route: g.route }, session: hit }
+    }
+    for (const project of projectGroupsForGatewayGroup(g, false)) {
+      const pSessions = [...(project.prefetchedSessions || []), ...(project.sessions || [])]
+      const pHit = pSessions.find(s => s.id === id || s.id === sessionId || s.session_id === id || s.runtime_id === id)
+      if (pHit) {
+        return { project: { key: project.key, route: g.route }, session: pHit }
+      }
+    }
+  }
+  return null
+}
+async function resolveMobileBridgeWsUrl() {
+  return 'ws://127.0.0.1:9999/ws?client=desktop'
+}
+
+async function connectMobileBridge() {
+  if (typeof window === 'undefined' || typeof WebSocket === 'undefined') return
+  if (mobileBridgeWs && (mobileBridgeWs.readyState === WebSocket.OPEN || mobileBridgeWs.readyState === WebSocket.CONNECTING)) {
+    return
+  }
+  try {
+    const wsUrl = await resolveMobileBridgeWsUrl()
+    const ws = new WebSocket(wsUrl)
+    mobileBridgeWs = ws
+
+    ws.onopen = () => {
+      $mobileBridgeStatus.set(true)
+      // 连接建立，立即推送最新会话与队列快照
+      syncMobileBridgeSnapshot()
+    }
+
+    ws.onmessage = async event => {
+      try {
+        const msg = JSON.parse(event.data)
+        if (msg.type === 'send_prompt') {
+          const { sessionId, prompt } = msg
+          const target = await resolveTargetSession(sessionId)
+          if (target) {
+            const incoming = Array.isArray(msg.images) ? msg.images : []
+            if (msg.audio && msg.audio.dataUrl) incoming.push(msg.audio)
+            const images = incoming.filter(item => /^data:image\//i.test(String(item?.dataUrl || '')))
+            const extras = incoming.filter(item => !/^data:image\//i.test(String(item?.dataUrl || '')))
+            const text = [String(prompt || '').trim(), ...extras.map(item => `[附件: ${item.name || 'file'}]`)].filter(Boolean).join('\n')
+            noteMobileTurnActivity(sessionId)
+            if (prompt) {
+              inflightUserPromptBySession.set(sessionId, {
+                prompt,
+                images: incoming,
+                timestamp: Date.now()
+              })
+            }
+            await submitMonitorPrompt({ images, project: target.project, prompt: text, session: target.session })
+            pluginQueryClient?.invalidateQueries?.({ queryKey: [...MONITOR_QUERY_KEY, routeKey(target.project.route), target.session.id] })
+            pluginQueryClient?.invalidateQueries?.({ queryKey: GATEWAY_SESSIONS_KEY })
+            await pushMobileTranscript(sessionId)
+            scheduleMobileTranscriptPush(sessionId)
+          }
+        } else if (msg.type === 'stop_task') {
+          const { sessionId } = msg
+          const target = await resolveTargetSession(sessionId)
+          if (target) {
+            await stopMonitorSessionTask(target.project, target.session)
+            markMobileSessionBusy(sessionId, false)
+            pluginQueryClient?.invalidateQueries?.({ queryKey: [...MONITOR_QUERY_KEY, routeKey(target.project.route), target.session.id] })
+            await pushMobileTranscript(sessionId)
+          }
+        } else if (msg.type === 'stop_background_task') {
+          const id = canonicalMobileSessionId(msg.sessionId)
+          await stopMobileBackgroundActivity(id, msg.processId)
+        } else if (msg.type === 'enqueue_prompt') {
+          const id = canonicalMobileSessionId(msg.sessionId)
+          const { prompt } = msg
+          const currentAll = $monitorMessageQueueBySession.get()
+          const currentQueue = currentAll[id] || []
+          $monitorMessageQueueBySession.set({
+            ...currentAll,
+            [id]: [
+              ...currentQueue,
+              {
+                id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                images: [],
+                prompt,
+                queuedAt: Date.now()
+              }
+            ]
+          })
+          syncMobileBridgeSnapshot()
+        } else if (msg.type === 'send_queue_now') {
+          const id = canonicalMobileSessionId(msg.sessionId)
+          await autoFlushNextQueuedPrompt(id)
+        } else if (msg.type === 'get_transcript') {
+          const id = String(msg.sessionId || '').trim()
+          if (id) {
+            mobileWatchedSessionIds.add(id)
+            if (mobileWatchedSessionIds.size > 8) {
+              const first = mobileWatchedSessionIds.values().next().value
+              mobileWatchedSessionIds.delete(first)
+              mobileActivityByStoredId.delete(first)
+              const pollTimer = mobileBackgroundPollTimers.get(first)
+              if (pollTimer) clearTimeout(pollTimer)
+              mobileBackgroundPollTimers.delete(first)
+              const expiryTimer = mobileActivityExpiryTimers.get(first)
+              if (expiryTimer) clearTimeout(expiryTimer)
+              mobileActivityExpiryTimers.delete(first)
+            }
+            if (!mobileStoredToRuntime.has(id)) {
+              try {
+                const target = await resolveTargetSession(id)
+                if (target) {
+                  const runtimeId = await resolveMonitorRuntimeSessionId(target.project.route, id)
+                  rememberMobileSessionRuntime(id, runtimeId)
+                }
+              } catch {}
+            }
+            await pushMobileTranscript(id)
+            pushMobileActivityUpdate(id)
+            void refreshMobileBackgroundActivity(id)
+          }
+        } else if (msg.type === 'get_earlier_messages') {
+          const id = canonicalMobileSessionId(msg.sessionId)
+          const offset = Math.max(0, Number(msg.offset) || 0)
+          const limit = Math.min(100, Math.max(10, Number(msg.limit) || 40))
+          await pushEarlierMobileTranscript(id, offset, limit)
+        } else if (msg.type === 'get_models') {
+          const id = String(msg.sessionId || '').trim()
+          const target = await resolveTargetSession(id)
+          if (target && mobileBridgeWs?.readyState === WebSocket.OPEN) {
+            const catalog = normalizeMonitorModelOptions(await fetchMonitorModelOptions(target.project))
+            mobileBridgeWs.send(JSON.stringify({
+              type: 'models_update',
+              sessionId: id,
+              choices: catalog.choices
+            }))
+          }
+        } else if (msg.type === 'set_model') {
+          const id = String(msg.sessionId || '').trim()
+          const target = await resolveTargetSession(id)
+          if (target) {
+            await switchMonitorSessionModel(target.project, target.session, {
+              model: msg.model,
+              provider: msg.provider
+            })
+            scheduleMobileBridgeSnapshot()
+          }
+        }
+      } catch (err) {
+        console.error('[Overlook Desktop] Error handling bridge message:', err)
+      }
+    }
+
+    ws.onclose = () => {
+      mobileBridgeWs = null
+      $mobileBridgeStatus.set(false)
+      scheduleMobileBridgeReconnect()
+    }
+
+    ws.onerror = () => {
+      try { ws.close() } catch {}
+    }
+  } catch {
+    scheduleMobileBridgeReconnect()
+  }
+}
+
+function scheduleMobileBridgeReconnect() {
+  if (mobileBridgeTimer) return
+  mobileBridgeTimer = setTimeout(() => {
+    mobileBridgeTimer = null
+    connectMobileBridge()
+  }, 5000)
+}
+
+async function syncMobileBridgeSnapshot() {
+  if (!mobileBridgeWs || mobileBridgeWs.readyState !== WebSocket.OPEN) return
+  try {
+    let groups = readCachedGatewaySessionGroups()
+    if (!groups.length) {
+      try {
+        const fetched = await fetchGatewaySessionGroups(PROFILE_SCOPE_ALL, $gatewaySessionLimit.get())
+        if (fetched?.groups?.length) groups = fetched.groups
+      } catch {}
+    }
+    const payload = buildMobileRailSnapshot(groups, $gatewaySessionPrefs.get(), $monitorMessageQueueBySession.get(), collectMobileBusyByStored())
+    mobileBridgeWs.send(JSON.stringify({
+      type: 'snapshot',
+      payload
+    }))
+  } catch {}
+}
+
+function scheduleMobileBridgeSnapshot() {
+  if (scheduleMobileBridgeSnapshot.timer) return
+  scheduleMobileBridgeSnapshot.timer = setTimeout(() => {
+    scheduleMobileBridgeSnapshot.timer = 0
+    void syncMobileBridgeSnapshot()
+  }, 2000)
+}
+
+function readCachedGatewaySessionGroups() {
+  const client = pluginQueryClient
+  if (!client?.getQueryData) return []
+  const prefs = typeof $gatewaySessionPrefs?.get === 'function' ? $gatewaySessionPrefs.get() : null
+  const keys = [
+    [...GATEWAY_SESSIONS_KEY, PROFILE_SCOPE_ALL],
+    [...GATEWAY_SESSIONS_KEY, prefs?.profileScope || PROFILE_SCOPE_DEFAULT],
+    GATEWAY_SESSIONS_KEY
+  ]
+  for (const key of keys) {
+    const groups = client.getQueryData(key)?.groups
+    if (Array.isArray(groups) && groups.length) return groups
+  }
+  const matches = typeof client.getQueriesData === 'function' ? client.getQueriesData({ queryKey: GATEWAY_SESSIONS_KEY }) : []
+  for (const entry of matches) {
+    const groups = entry?.[1]?.groups
+    if (Array.isArray(groups) && groups.length) return groups
+  }
+  return []
+}
+
+function serializeMobileRailSession(session, extra) {
+  extra = extra && typeof extra === 'object' ? extra : {}
+  const busy = Boolean(
+    extra.busy
+    || session.is_running
+    || session.busy
+    || session.status === 'running'
+    || session.status === 'working'
+  )
+  return {
+    id: session.id,
+    title: sessionRowTitle(session),
+    model: String(session.model || '').trim(),
+    gateway: extra.gateway || '',
+    projectKey: extra.projectKey || '',
+    projectLabel: extra.projectLabel || '',
+    status: busy ? '执行中' : monitorSessionStatusLabel(session, []),
+    busy,
+    lastActive: session.last_active || session.updated_at || session.started_at || session.created_at || 0,
+    preview: String(session.preview || '').slice(0, 160),
+    unread: sessionUnread(session),
+    pinned: sessionPinned(session),
+    isActive: sessionActive(session),
+    runtimeId: String(session.runtime_id || extra.runtimeId || '').trim()
+  }
+}
+
+function buildMobileRailSnapshot(groups, prefs, queues, busyBySession) {
+  prefs = prefs && typeof prefs === 'object' ? prefs : {}
+  queues = queues && typeof queues === 'object' ? queues : {}
+  busyBySession = busyBySession && typeof busyBySession === 'object' ? busyBySession : {}
+  const hideScheduled = prefs.hideScheduled !== false
+  const appearance = prefs.projectAppearance && typeof prefs.projectAppearance === 'object' ? prefs.projectAppearance : {}
+  const projects = []
+  const busyMap = { ...busyBySession }
+  for (const group of groups || []) {
+    const gateway = String(group.remoteLabel || group.label || '').trim()
+    for (const project of projectGroupsForGatewayGroup(group, hideScheduled)) {
+      const sessions = normalizeProjectSessions(
+        [...(project.prefetchedSessions || []), ...(project.sessions || [])],
+        project.profile,
+        hideScheduled
+      ).map(session => {
+        const busy = Boolean(busyMap[session.id] || session.is_running || session.busy)
+        if (busy) busyMap[session.id] = true
+        return serializeMobileRailSession(session, {
+          busy,
+          gateway,
+          projectKey: project.key,
+          projectLabel: projectDisplayLabel(project)
+        })
+      })
+      const custom = projectAppearanceFor(appearance, project.key)
+      const icon = isHomeProject(project)
+        ? (custom?.icon && PROJECT_APPEARANCE_ICONS.includes(custom.icon) ? custom.icon : 'home')
+        : projectIconName(appearance, project.key)
+      projects.push({
+        key: project.key,
+        label: projectDisplayLabel(project),
+        gateway,
+        icon,
+        color: projectIconColor(appearance, project.key) || '',
+        lastActive: projectLatestActivity(project),
+        sessionCount: Math.max(sessions.length, Number(project.sessionCount) || 0),
+        sessions
+      })
+    }
+  }
+  projects.sort(compareProjects)
+  const pinnedRows = []
+  for (const project of projects) {
+    const rest = []
+    for (const session of project.sessions) {
+      if (session.pinned) {
+        pinnedRows.push({
+          ...session,
+          color: project.color,
+          projectKey: project.key,
+          projectLabel: project.label
+        })
+      } else {
+        rest.push(session)
+      }
+    }
+    project.sessions = rest
+  }
+  const visible = projects.filter(project => project.sessions.length > 0)
+  if (pinnedRows.length) {
+    visible.unshift({
+      key: '__pinned__',
+      label: '置顶',
+      gateway: '',
+      icon: 'star',
+      color: '#ca8a04',
+      pinnedSection: true,
+      lastActive: pinnedRows[0].lastActive,
+      sessionCount: pinnedRows.length,
+      sessions: pinnedRows
+    })
+  }
+  return {
+    hideScheduled,
+    queues,
+    busyBySession: busyMap,
+    projects: visible,
+    monitoredSessions: visible.flatMap(project => project.sessions)
+  }
+}
 const $gatewaySessionLimit = atom(GATEWAY_SESSIONS_LIMIT)
 const $gatewaySessionPrefs = atom(DEFAULT_GATEWAY_SESSION_PREFERENCES)
 const $gatewayProjectDataRevision = atom(0)
+const $monitorMessageQueueBySession = atom({})
+const $mobileBridgeStatus = atom(false)
 const sessionDataRevision = { current: 0 }
+
+function normalizeStringKeyList(value, max) {
+  const limit = Number.isFinite(Number(max)) && Number(max) > 0 ? Math.floor(Number(max)) : MONITOR_KEY_LIST_MAX
+  const seen = new Set()
+  const keys = []
+  for (const item of Array.isArray(value) ? value : []) {
+    const key = String(item || '').trim()
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    keys.push(key)
+    if (keys.length >= limit) break
+  }
+  return keys
+}
+
+function normalizeMonitorLayout(value) {
+  return MONITOR_LAYOUTS.includes(value) ? value : 'tile'
+}
 
 function normalizeProjectAppearance(value) {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
@@ -196,6 +1194,9 @@ function normalizeGatewaySessionPreferences(value) {
   return {
     collapsedKeys: Array.isArray(source.collapsedKeys) ? source.collapsedKeys : [],
     hideScheduled: typeof source.hideScheduled === 'boolean' ? source.hideScheduled : HIDE_SCHEDULED_SESSIONS_DEFAULT,
+    monitorHiddenKeys: normalizeStringKeyList(source.monitorHiddenKeys, MONITOR_KEY_LIST_MAX),
+    monitorLayout: normalizeMonitorLayout(source.monitorLayout),
+    monitorParkedKeys: normalizeStringKeyList(source.monitorParkedKeys, MONITOR_KEY_LIST_MAX),
     pinnedProjectKeys: Array.isArray(source.pinnedProjectKeys)
       ? source.pinnedProjectKeys.filter(key => typeof key === 'string').map(key => key.trim()).filter(Boolean)
       : [],
@@ -405,24 +1406,65 @@ function modernIconStylesheet() {
 
   return `${iconRules}span:has(> img[src*="nous-girl.jpg"]){position:relative!important;background-color:var(--ui-bg-elevated)!important}span:has(> img[src*="nous-girl.jpg"])>img[src*="nous-girl.jpg"]{opacity:0!important}span:has(> img[src*="nous-girl.jpg"])::after{content:"";position:absolute;inset:20%;display:block;background-color:var(--ui-accent);-webkit-mask-image:${brandMask};mask-image:${brandMask};-webkit-mask-position:center;mask-position:center;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;-webkit-mask-size:contain;mask-size:contain}
 [data-slot='aui_assistant-message-content'] [data-conversation-scaffold]{opacity:0.78}
-.codex-monitor-grid{display:grid;min-height:0;flex:1;gap:0.75rem;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr))}
-.codex-monitor-card{position:relative;display:flex;min-height:0;overflow:hidden;flex-direction:column;border:1px solid color-mix(in srgb,var(--monitor-project-color, #64748b) 28%,#d4d4d8);border-radius:12px;background:#ffffff;box-shadow:0 2px 8px rgba(13,28,47,0.06)}
-.codex-monitor-card::before{content:"";position:absolute;z-index:2;top:0;right:12px;left:12px;height:2px;border-radius:0 0 999px 999px;background:color-mix(in srgb,var(--monitor-project-color, #64748b) 72%,transparent)}
-.codex-monitor-empty-slot{align-items:center;justify-content:center;border-style:dashed;border-color:#dedee5;background:#fafafd;box-shadow:none;color:var(--ui-text-quaternary)}
-.codex-monitor-empty-slot::before{display:none}
-.codex-monitor-message-user{margin-left:auto;max-width:86%;border:1px solid #e2e2e6;border-radius:10px;background:#f3f4f5;padding:0.45rem 0.6rem;white-space:pre-wrap}
+.codex-monitor-page{display:flex;min-height:0;height:100%;flex-direction:column;background-color:#f8fafc;background-image:radial-gradient(rgba(100,116,139,0.12) 1px,transparent 1px);background-size:16px 16px;color:#1e293b}
+.codex-monitor-topbar{display:flex;height:4rem;flex-shrink:0;align-items:center;justify-content:space-between;gap:1rem;border-bottom:1px solid #e2e8f0;background:rgba(255,255,255,0.95);padding:0 1.25rem;box-shadow:0 1px 2px rgba(15,23,42,0.04)}
+.codex-monitor-live{display:inline-flex;align-items:center;gap:0.35rem;border:1px solid #a7f3d0;border-radius:0.25rem;background:#ecfdf5;padding:0.1rem 0.5rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:500;color:#047857}
+.codex-monitor-live-dot{width:0.375rem;height:0.375rem;border-radius:999px;background:#10b981}
+.codex-monitor-grid{display:grid;min-height:0;flex:1;align-content:start;gap:1rem;overflow:auto;padding:1rem;grid-template-columns:repeat(auto-fill,minmax(22rem,1fr));grid-auto-rows:minmax(28rem,auto)}
+.codex-monitor-grid[data-layout='compact']{grid-template-columns:repeat(auto-fill,minmax(16rem,1fr));grid-auto-rows:minmax(22rem,auto)}
+.codex-monitor-grid[data-layout='list']{grid-template-columns:minmax(0,1fr);grid-auto-rows:minmax(14rem,auto)}
+.codex-monitor-card{position:relative;display:flex;min-height:28rem;max-height:36rem;overflow:hidden;flex-direction:column;border:1px solid #e2e8f0;border-radius:0.75rem;background:#ffffff;box-shadow:0 1px 2px rgba(15,23,42,0.05)}
+.codex-monitor-grid[data-layout='compact'] .codex-monitor-card,.codex-monitor-grid[data-layout='compact'] .codex-monitor-new-tile{min-height:22rem;max-height:26rem}
+.codex-monitor-grid[data-layout='list'] .codex-monitor-card,.codex-monitor-grid[data-layout='list'] .codex-monitor-new-tile{min-height:14rem;max-height:18rem}
+.codex-monitor-card:hover{border-color:color-mix(in srgb,var(--monitor-project-color,#10b981) 55%,#e2e8f0);box-shadow:0 8px 18px rgba(15,23,42,0.06)}
+.codex-monitor-new-tile{display:flex;min-height:28rem;flex-direction:column;align-items:center;justify-content:center;gap:0.75rem;border:2px dashed #cbd5e1;border-radius:0.75rem;background:rgba(255,255,255,0.6);padding:1.5rem;text-align:center;cursor:pointer;color:#64748b}
+.codex-monitor-new-tile:hover{border-color:#34d399;background:#ffffff;color:#047857}
+.codex-monitor-new-tile-icon{display:flex;width:3.5rem;height:3.5rem;align-items:center;justify-content:center;border:1px solid #e2e8f0;border-radius:1rem;background:#f1f5f9}
+.codex-monitor-new-tile:hover .codex-monitor-new-tile-icon{border-color:#a7f3d0;background:#ecfdf5}
+.codex-monitor-index{display:flex;width:1.75rem;height:1.75rem;flex-shrink:0;align-items:center;justify-content:center;border:1px solid color-mix(in srgb,var(--monitor-project-color,#10b981) 35%,#e2e8f0);border-radius:0.5rem;background:color-mix(in srgb,var(--monitor-project-color,#10b981) 12%,#ffffff);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;font-weight:700;color:color-mix(in srgb,var(--monitor-project-color,#047857) 70%,#0f172a)}
+.codex-monitor-status-pill{display:inline-flex;align-items:center;border:1px solid #d1fae5;border-radius:0.25rem;background:#ecfdf5;padding:0.1rem 0.4rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;font-weight:500;color:#047857}
+.codex-monitor-status-pill[data-status='执行中']{border-color:#a5f3fc;background:#ecfeff;color:#0e7490}
+.codex-monitor-status-pill[data-status='就绪待命中']{border-color:#fde68a;background:#fffbeb;color:#b45309}
+.codex-monitor-queue-chip{display:inline-flex;align-items:center;gap:0.5rem;border:1px solid #fde68a;border-radius:0.5rem;background:#fffbeb;padding:0.35rem 0.65rem;font-size:12px;color:#92400e;cursor:pointer}
+.codex-monitor-layout-switch{display:flex;align-items:center;border:1px solid #e2e8f0;border-radius:0.5rem;background:#f1f5f9;padding:0.125rem}
+.codex-monitor-layout-switch button{display:inline-flex;align-items:center;gap:0.25rem;border:0;border-radius:0.375rem;background:transparent;padding:0.25rem 0.6rem;font-size:12px;color:#475569;cursor:pointer}
+.codex-monitor-layout-switch button[aria-pressed='true']{background:#ffffff;color:#0f172a;box-shadow:0 1px 2px rgba(15,23,42,0.08)}
+.codex-monitor-message-meta{display:flex;align-items:center;gap:0.35rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:8.5px;color:#94a3b8}
+.codex-monitor-message-user-wrap{display:flex;flex-direction:column;align-items:flex-end;gap:0.2rem;padding-left:1.5rem}
+.codex-monitor-message-assistant-wrap{display:flex;flex-direction:column;align-items:flex-start;gap:0.2rem;padding-right:1.5rem}
+.codex-monitor-message-user{margin-left:auto;max-width:86%;border:1px solid #e2e8f0;border-radius:0.65rem 0.65rem 0.2rem 0.65rem;background:#ffffff;padding:0.4rem 0.6rem;box-shadow:0 1px 2px rgba(15,23,42,0.04);white-space:pre-wrap;font-size:0.625rem;line-height:1.4;-webkit-user-select:text!important;user-select:text!important}
 .codex-monitor-status{align-self:flex-start}
-.codex-monitor-markdown{font-size:0.72rem;line-height:1.5;overflow-wrap:anywhere}
-.codex-monitor-markdown :where(p,ul,ol,pre,blockquote){margin:0.3rem 0}
-.codex-monitor-markdown :where(ul,ol){padding-left:1.1rem}
-.codex-monitor-markdown pre{max-width:100%;overflow:auto;border:1px solid var(--ui-stroke-tertiary);border-radius:8px;background:#f8f8fa;padding:0.5rem;font-size:0.65rem}
+.codex-monitor-markdown{font-size:0.625rem;line-height:1.4;overflow-wrap:anywhere;border:1px solid #e2e8f0;border-radius:0.65rem 0.65rem 0.65rem 0.2rem;background:#ffffff;padding:0.4rem 0.6rem;box-shadow:0 1px 2px rgba(15,23,42,0.04);-webkit-user-select:text!important;user-select:text!important}
+.codex-monitor-card [data-selectable-text='true'],.codex-monitor-card [data-selectable-text='true'] *,.codex-monitor-markdown *{-webkit-user-select:text!important;user-select:text!important}
+.codex-monitor-markdown :where(p,ul,ol,pre,blockquote){margin:0.18rem 0}
+.codex-monitor-markdown :where(ul,ol){padding-left:0.9rem}
+.codex-monitor-markdown :where(h1,h2,h3,h4,h5,h6){font-size:0.6875rem!important;font-weight:700!important;line-height:1.3!important;margin:0.3rem 0 0.12rem 0!important}
+.codex-monitor-markdown :where(h1){font-size:0.75rem!important}
+.codex-monitor-markdown :where(h2){font-size:0.7rem!important}
+.codex-monitor-markdown pre{max-width:100%;overflow:auto;border:1px solid var(--ui-stroke-tertiary);border-radius:5px;background:#f8fafc;padding:0.3rem 0.45rem;font-size:0.575rem!important;line-height:1.3!important}
+.codex-monitor-markdown code{font-size:0.6rem!important;border-radius:0.2rem!important;padding:0.04rem 0.2rem!important}
+.codex-monitor-composer{display:flex;align-items:center;gap:0.35rem;border:1px solid #e2e8f0;border-radius:0.45rem;background:#f8fafc;padding:0.25rem 0.5rem}
+.codex-monitor-composer:focus-within{border-color:#10b981;background:#ffffff}
+.codex-monitor-composer-input{flex:1;min-width:0;border:0;background:transparent;padding:0;font-size:10.5px;color:#0f172a;outline:none}
+.codex-monitor-queue-bar{display:flex;align-items:center;justify-content:space-between;gap:0.5rem;border-top:1px dashed #e2e8f0;background:#f8fafc;padding:0.35rem 0.65rem;font-size:10px;color:#64748b}
+.codex-monitor-queue-list{display:flex;flex-direction:column;gap:0.25rem;padding:0.35rem 0.65rem;background:#f1f5f9/60;border-top:1px solid #e2e8f0;max-height:6.5rem;overflow-y:auto}
+.codex-monitor-queue-item{display:flex;align-items:center;justify-content:space-between;gap:0.4rem;background:#ffffff;border:1px solid #e2e8f0;border-radius:0.35rem;padding:0.2rem 0.4rem;font-size:10px}
+.codex-monitor-footer{display:flex;height:2.25rem;flex-shrink:0;align-items:center;justify-content:space-between;border-top:1px solid #e2e8f0;background:#ffffff;padding:0 1rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:#64748b}
 .codex-monitor-new-field{display:flex;flex-direction:column;gap:0.35rem}
 .codex-monitor-new-label{font-size:0.7rem;font-weight:500;color:var(--ui-text-secondary)}
 .codex-monitor-new-images{display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center}
 .codex-monitor-new-thumb{position:relative;height:3rem;width:3rem;overflow:hidden;border:1px solid #e2e2e6;border-radius:8px;background:#f8f8fa}
 .codex-monitor-new-thumb img{display:block;height:100%;width:100%;object-fit:cover}
 .codex-monitor-new-thumb-remove{position:absolute;top:0.15rem;right:0.15rem;display:grid;place-items:center;width:1rem;height:1rem;border:0;border-radius:999px;background:rgba(15,23,42,0.72);color:#fff}
-@media(max-width:900px){.codex-monitor-grid{display:flex;overflow-y:auto;flex-direction:column}.codex-monitor-card{min-height:18rem}}
+.codex-monitor-image-gallery{display:flex;flex-wrap:wrap;gap:0.35rem;margin-top:0.35rem}
+.codex-monitor-img-thumb{position:relative;height:3.5rem;width:3.5rem;overflow:hidden;border:1px solid #e2e8f0;border-radius:0.45rem;background:#f8fafc;cursor:pointer;transition:transform 120ms ease,box-shadow 120ms ease}
+.codex-monitor-img-thumb:hover{transform:scale(1.03);box-shadow:0 2px 6px rgba(15,23,42,0.12);border-color:#cbd5e1}
+.codex-monitor-img-thumb img{display:block;height:100%;width:100%;object-fit:cover}
+.codex-monitor-lightbox{position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(15,23,42,0.75);backdrop-filter:blur(4px);padding:1.5rem;cursor:zoom-out}
+.codex-monitor-lightbox-img{max-width:92vw;max-height:90vh;border-radius:0.5rem;box-shadow:0 12px 36px rgba(0,0,0,0.35);object-fit:contain;cursor:default}
+.codex-monitor-lightbox-close{position:absolute;top:1.25rem;right:1.25rem;display:flex;align-items:center;justify-content:center;width:2rem;height:2rem;border-radius:999px;background:rgba(255,255,255,0.2);color:#fff;border:0;cursor:pointer;transition:background 120ms ease}
+.codex-monitor-lightbox-close:hover{background:rgba(255,255,255,0.4)}
+@media(max-width:900px){.codex-monitor-grid{grid-template-columns:minmax(0,1fr)}.codex-monitor-card,.codex-monitor-new-tile{min-height:22rem;max-height:none}}
 .codex-gateway-session-row{position:relative;isolation:isolate}
 .codex-gateway-session-row [data-session-status]:not(:has([role="status"])){display:none!important}
 .codex-gateway-session-row [data-session-menu]{opacity:0;pointer-events:none}
@@ -613,7 +1655,14 @@ function sessionIsExternalChannel(session) {
 
 function eventSessionId(event) {
   const payload = event?.payload && typeof event.payload === 'object' ? event.payload : null
-  return String(event?.session_id || payload?.session_id || payload?.stored_session_id || '').trim()
+  return String(
+    event?.session_id
+    || event?.sessionId
+    || payload?.session_id
+    || payload?.stored_session_id
+    || payload?.sessionId
+    || ''
+  ).trim()
 }
 
 function sessionActivityValue(session) {
@@ -672,7 +1721,7 @@ function compareProjects(a, b) {
   return profileOrder || String(a?.key || '').localeCompare(String(b?.key || ''))
 }
 
-function monitorSessionCandidates(projects) {
+function monitorEligibleSessions(projects) {
   const seen = new Set()
   const entries = []
 
@@ -686,7 +1735,7 @@ function monitorSessionCandidates(projects) {
     for (const session of sessions) {
       const sessionId = String(session?.id || '').trim()
       const identity = sessionId ? `${owner}::${sessionId}` : ''
-      if (!identity || seen.has(identity) || !sessionActive(session) || sessionIsExternalChannel(session)) continue
+      if (!identity || seen.has(identity) || sessionIsExternalChannel(session)) continue
       seen.add(identity)
       entries.push({ key: identity, project, session })
     }
@@ -695,19 +1744,62 @@ function monitorSessionCandidates(projects) {
   return entries.sort((a, b) => sessionActivityValue(b.session) - sessionActivityValue(a.session) || a.key.localeCompare(b.key))
 }
 
-function monitorSessionEntries(projects, limit) {
-  const requested = Number(limit)
-  const max = Number.isFinite(requested) && requested > 0
-    ? Math.min(MONITOR_SESSION_LIMIT, Math.floor(requested))
-    : MONITOR_SESSION_LIMIT
-  return monitorSessionCandidates(projects).slice(0, max)
+function monitorSessionCandidates(projects) {
+  return monitorEligibleSessions(projects).filter(entry => sessionActive(entry.session))
 }
 
-function stabilizeMonitorSlotKeys(previousKeys, candidates, limit) {
+function monitorDisplayedCandidates(projects, hiddenKeys, parkedKeys) {
+  const hidden = new Set(normalizeStringKeyList(hiddenKeys, MONITOR_KEY_LIST_MAX))
+  const parked = new Set(normalizeStringKeyList(parkedKeys, MONITOR_KEY_LIST_MAX))
+  return monitorEligibleSessions(projects).filter(entry => {
+    if (hidden.has(entry.key)) return false
+    return sessionActive(entry.session) || parked.has(entry.key)
+  })
+}
+
+function monitorQueueCandidates(projects, displayedKeys) {
+  const shown = new Set(normalizeStringKeyList(displayedKeys, MONITOR_KEY_LIST_MAX))
+  return monitorEligibleSessions(projects).filter(entry => !shown.has(entry.key))
+}
+
+function monitorHideSessionKeys(hiddenKeys, parkedKeys, key) {
+  const target = String(key || '').trim()
+  const hidden = normalizeStringKeyList(hiddenKeys, MONITOR_KEY_LIST_MAX)
+  const parked = normalizeStringKeyList(parkedKeys, MONITOR_KEY_LIST_MAX).filter(item => item !== target)
+  if (target && !hidden.includes(target)) hidden.push(target)
+  const nextHidden = hidden.slice(-MONITOR_KEY_LIST_MAX)
+  return {
+    hiddenKeys: nextHidden,
+    monitorHiddenKeys: nextHidden,
+    monitorParkedKeys: parked,
+    parkedKeys: parked
+  }
+}
+
+function monitorParkSessionKeys(hiddenKeys, parkedKeys, key) {
+  const target = String(key || '').trim()
+  const hidden = normalizeStringKeyList(hiddenKeys, MONITOR_KEY_LIST_MAX).filter(item => item !== target)
+  const parked = normalizeStringKeyList(parkedKeys, MONITOR_KEY_LIST_MAX)
+  if (target && !parked.includes(target)) parked.push(target)
+  const nextParked = parked.slice(-MONITOR_KEY_LIST_MAX)
+  return {
+    hiddenKeys: hidden,
+    monitorHiddenKeys: hidden,
+    monitorParkedKeys: nextParked,
+    parkedKeys: nextParked
+  }
+}
+
+function monitorSessionEntries(projects, limit) {
+  const candidates = monitorSessionCandidates(projects)
   const requested = Number(limit)
-  const size = Number.isFinite(requested) && requested > 0
-    ? Math.min(MONITOR_SESSION_LIMIT, Math.floor(requested))
-    : MONITOR_SESSION_LIMIT
+  if (Number.isFinite(requested) && requested > 0) {
+    return candidates.slice(0, Math.floor(requested))
+  }
+  return candidates
+}
+
+function stabilizeMonitorSlotKeys(previousKeys, candidates) {
   const candidateKeys = []
   const eligible = new Set()
 
@@ -718,22 +1810,51 @@ function stabilizeMonitorSlotKeys(previousKeys, candidates, limit) {
     candidateKeys.push(key)
   }
 
-  const previous = Array.isArray(previousKeys) ? previousKeys : []
-  const next = Array.from({ length: size }, (_, index) => {
-    const key = String(previous[index] || '').trim()
-    return key && eligible.has(key) ? key : ''
-  })
-  const occupied = new Set(next.filter(Boolean))
+  const next = []
+  const occupied = new Set()
+  for (const value of Array.isArray(previousKeys) ? previousKeys : []) {
+    const key = String(value || '').trim()
+    if (!key || !eligible.has(key) || occupied.has(key)) continue
+    occupied.add(key)
+    next.push(key)
+  }
 
   for (const key of candidateKeys) {
     if (occupied.has(key)) continue
-    const emptyIndex = next.indexOf('')
-    if (emptyIndex === -1) break
-    next[emptyIndex] = key
     occupied.add(key)
+    next.push(key)
   }
 
   return next
+}
+
+function monitorSessionIndexLabel(index) {
+  const value = Number(index)
+  const n = Number.isFinite(value) && value >= 0 ? Math.floor(value) + 1 : 1
+  return String(n).padStart(2, '0')
+}
+
+function monitorSessionStatusLabel(session, messages) {
+  const rows = Array.isArray(messages) ? messages : []
+  if (rows.some(row => row && row.kind === 'status')) return '执行中'
+  return sessionActive(session) ? '对话中' : '就绪待命中'
+}
+
+function monitorSessionModelLabel(session) {
+  return String(session?.model || '').trim()
+}
+
+function monitorSessionTokenLabel(session) {
+  const tokens = Number(session?.input_tokens || 0) + Number(session?.output_tokens || 0)
+  if (!Number.isFinite(tokens) || tokens <= 0) return ''
+  return `Tokens: ${Math.round(tokens).toLocaleString('en-US')}`
+}
+
+function monitorMessageStamp(message) {
+  const value = Number(message?.timestamp || message?.created_at || 0)
+  if (!Number.isFinite(value) || value <= 0) return ''
+  const ms = value < 100_000_000_000 ? value * 1000 : value
+  return relativeTime(ms)
 }
 
 function monitorScrollToBottom(element) {
@@ -758,6 +1879,50 @@ function monitorContentText(value) {
     return monitorContentText(value.text ?? value.content ?? value.output ?? '')
   }
   return ''
+}
+
+const MONITOR_ATTACH_TOOL_RE = /\[(?:The )?user attached (?:an )?image:[^\]]+\]\s*\[Examine it with the vision_analyze tool using image_url:\s*([^\]]+)\]/gi
+const MONITOR_IMAGE_DIRECTIVE_RE = /@image:(?:`([^`]+)`|"([^"]+)"|([^\s\n]+))/gi
+const MONITOR_MEDIA_TAG_RE = /[`"']?MEDIA:\s*(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([^\s\n]+))[`"']?/gi
+
+function extractMonitorMessageImages(rawText) {
+  if (!rawText || typeof rawText !== 'string') return { cleanedText: '', imagePaths: [] }
+  const paths = []
+  const seen = new Set()
+
+  const addPath = raw => {
+    let p = String(raw || '').trim()
+    if (!p) return
+    // 去除多余的引号包裹
+    p = p.replace(/^["'`]|["'`]$/g, '').trim()
+    if (!p || seen.has(p)) return
+    seen.add(p)
+    paths.push(p)
+  }
+
+  // 1. 匹配网关底层 vision_analyze 附件注入
+  for (const match of rawText.matchAll(MONITOR_ATTACH_TOOL_RE)) {
+    addPath(match[1])
+  }
+
+  // 2. 匹配前端常用的 @image:... 指令
+  for (const match of rawText.matchAll(MONITOR_IMAGE_DIRECTIVE_RE)) {
+    addPath(match[1] || match[2] || match[3])
+  }
+
+  // 3. 匹配 MEDIA:... 标签
+  for (const match of rawText.matchAll(MONITOR_MEDIA_TAG_RE)) {
+    addPath(match[1] || match[2] || match[3] || match[4])
+  }
+
+  // 清洗掉原始文本中的冗长内部注入协议与指令标记，使对话泡保持优雅干净
+  let cleaned = rawText
+    .replace(MONITOR_ATTACH_TOOL_RE, '')
+    .replace(MONITOR_IMAGE_DIRECTIVE_RE, '')
+    .replace(MONITOR_MEDIA_TAG_RE, '')
+    .trim()
+
+  return { cleanedText: cleaned, imagePaths: paths }
 }
 
 function monitorMessageText(message) {
@@ -799,15 +1964,51 @@ function monitorMessageIsToolActivity(message) {
 
 function monitorWallMessages(response, session, limit) {
   const rows = normalizeMonitorTranscript(response)
-  const wall = [...monitorVisibleMessages(response, limit)]
-  if (!wall.some(row => row.message && row.message.role === 'user')) {
-    const preview = String(session?.preview || '').trim()
-    if (preview) {
-      wall.unshift({
-        key: 'monitor-session-preview',
-        message: { role: 'user' },
-        text: preview
+  const inflight = session?.id ? inflightUserPromptBySession.get(session.id) : null
+  if (inflight && inflight.prompt && Array.isArray(rows)) {
+    const hasPrompt = rows.some(r => r.role === 'user' && (r.content === inflight.prompt || r.text === inflight.prompt))
+    if (!hasPrompt) {
+      rows.push({
+        id: `inflight-${session.id}-${inflight.timestamp}`,
+        role: 'user',
+        content: inflight.prompt,
+        text: inflight.prompt,
+        timestamp: Math.floor(inflight.timestamp / 1000)
       })
+    }
+  }
+  const allVisible = []
+  for (const [index, message] of rows.entries()) {
+    if (message.display_kind === 'hidden' || !['user', 'assistant'].includes(message.role)) continue
+    const text = monitorMessageText(message)
+    if (!text) continue
+    allVisible.push({
+      key: String(message.row_id ?? message.id ?? `${message.timestamp || 0}:${index}`),
+      message,
+      text
+    })
+  }
+
+  const requested = Number(limit)
+  const max = Number.isFinite(requested) && requested > 0 ? Math.floor(requested) : 18
+  const wall = allVisible.slice(-max)
+
+  // 保证卡片能看到该轮对话的用户指令：若当前切片中暂无用户消息，
+  // 优先从本次获取的历史记录中抽取最新一条真实的 user 消息置顶；
+  // 仅在会话极短或冷启动且 transcript 中尚无任何消息记录时，才回退至 session.preview。
+  if (!wall.some(row => row.message && row.message.role === 'user')) {
+    const latestUserRow = allVisible.filter(row => row.message && row.message.role === 'user').pop()
+    if (latestUserRow) {
+      wall.unshift(latestUserRow)
+    } else if (allVisible.length === 0) {
+      const preview = String(session?.preview || '').trim()
+      if (preview) {
+        wall.unshift({
+          key: 'monitor-session-preview',
+          message: { role: 'user' },
+          text: preview
+        })
+      }
     }
   }
 
@@ -833,14 +2034,130 @@ function monitorWallMessages(response, session, limit) {
   return wall
 }
 
-function monitorTranscriptRequest(project, session) {
+function monitorToolCallLabel(message) {
+  const name = String(message?.tool_name || message?.name || '').trim()
+  if (name) return name
+  const calls = Array.isArray(message?.tool_calls) ? message.tool_calls : []
+  for (const call of calls) {
+    if (typeof call === 'string' && call.trim()) return call.trim()
+    if (!call || typeof call !== 'object') continue
+    const nested = call.function && typeof call.function === 'object' ? call.function : null
+    const found = String(call.name || call.tool || nested?.name || '').trim()
+    if (found) return found
+  }
+  return '工具'
+}
+
+function monitorThinkingText(message) {
+  if (!message || typeof message !== 'object') return ''
+  return monitorContentText(message.reasoning_content ?? message.reasoning ?? '')
+}
+
+function monitorMobileActivityKind(message) {
+  const displayKind = String(message?.display_kind || '').trim()
+  if (displayKind === 'async_delegation_complete') return 'subagent'
+  const tool = String(message?.tool_name || message?.name || '').trim().toLowerCase()
+  if (tool.includes('todo')) return 'todo'
+  if (tool.includes('delegate') || tool.includes('subagent') || tool.includes('background')) return 'background'
+  return ''
+}
+
+function monitorSubagentText(message) {
+  let meta = message?.display_metadata
+  if (typeof meta === 'string') {
+    try { meta = JSON.parse(meta) } catch { meta = null }
+  }
+  const count = meta && typeof meta === 'object' ? Number(meta.task_count) : NaN
+  if (Number.isFinite(count) && count > 0) return `${Math.floor(count)} 个子代理完成`
+  return monitorMessageText(message) || '子代理任务完成'
+}
+
+function monitorMobileMessages(response, session, limit, options) {
+  const rows = normalizeMonitorTranscript(response)
+  const out = []
+  for (const [index, message] of rows.entries()) {
+    const role = String(message.role || '').trim().toLowerCase()
+    const thinking = monitorThinkingText(message)
+    const text = monitorMessageText(message)
+    const isTool = monitorMessageIsToolActivity(message)
+    const activity = monitorMobileActivityKind(message)
+    const keyBase = String(message.row_id ?? message.id ?? `${message.timestamp || 0}:${index}`)
+    if (thinking) {
+      out.push({
+        key: `${keyBase}:thinking`,
+        kind: 'thinking',
+        message,
+        role: 'thinking',
+        text: thinking
+      })
+    }
+    if (activity === 'subagent') {
+      out.push({
+        key: `${keyBase}:subagent`,
+        kind: 'subagent',
+        message,
+        role: 'subagent',
+        text: monitorSubagentText(message)
+      })
+    } else if (isTool) {
+      const tool = monitorToolCallLabel(message)
+      const preview = text || monitorContentText(message.context ?? message.args ?? '')
+      const kind = activity === 'todo' || activity === 'background' ? activity : 'tool'
+      out.push({
+        key: `${keyBase}:${kind}`,
+        kind,
+        message,
+        role: kind,
+        text: preview || `调用 ${tool}`,
+        tool
+      })
+    }
+    if (message.display_kind === 'hidden') continue
+    if (!['user', 'assistant'].includes(role)) continue
+    if (!text) continue
+    out.push({
+      key: keyBase,
+      kind: role,
+      message,
+      role,
+      text
+    })
+  }
+
+  const requested = Number(limit)
+  const max = Number.isFinite(requested) && requested > 0 ? Math.floor(requested) : 80
+  const wall = out.slice(-max)
+  if (!options?.isEarlier && !wall.some(row => row.role === 'user')) {
+    const latestUserRow = out.filter(row => row.role === 'user').pop()
+    if (latestUserRow) {
+      wall.unshift(latestUserRow)
+    } else if (out.length === 0) {
+      const preview = String(session?.preview || '').trim()
+      if (preview) {
+        wall.unshift({
+          key: 'monitor-session-preview',
+          kind: 'user',
+          message: { role: 'user' },
+          role: 'user',
+          text: preview
+        })
+      }
+    }
+  }
+  return wall
+}
+
+function monitorTranscriptRequest(project, session, options) {
   const route = sessionRoute(project)
   const sessionId = String(session?.id || '').trim()
   if (!route || !sessionId) {
     throw new Error('Unable to resolve the monitored session owner.')
   }
   const profile = routeTargetProfile(route)
-  const query = `limit=${MONITOR_TRANSCRIPT_LIMIT}&offset=0&order=latest&include_compacted=true&profile=${encodeURIComponent(profile)}`
+  const limit = options?.limit ?? MONITOR_TRANSCRIPT_LIMIT
+  const offset = options?.offset ?? 0
+  const order = options?.order ?? 'latest'
+  const query = `limit=${encodeURIComponent(limit)}&offset=${encodeURIComponent(offset)}&order=${encodeURIComponent(order)}&include_compacted=true&profile=${encodeURIComponent(profile)}`
   return {
     connectionId: route.connectionId,
     path: `/api/sessions/${encodeURIComponent(sessionId)}/messages?${query}`,
@@ -849,12 +2166,12 @@ function monitorTranscriptRequest(project, session) {
   }
 }
 
-async function fetchMonitorTranscript(project, session) {
+async function fetchMonitorTranscript(project, session, options) {
   const api = typeof window !== 'undefined' ? window.hermesDesktop?.api : null
   if (typeof api !== 'function') {
     throw new Error('Hermes Desktop transcript API unavailable.')
   }
-  return normalizeMonitorTranscript(await api(monitorTranscriptRequest(project, session)))
+  return normalizeMonitorTranscript(await api(monitorTranscriptRequest(project, session, options)))
 }
 
 function monitorModelChoiceKey(provider, model) {
@@ -1010,6 +2327,118 @@ async function createMonitorSession(options) {
       } catch {}
     }
     throw error
+  } finally {
+    try { release?.() } catch {}
+  }
+}
+
+async function resolveMonitorRuntimeSessionId(route, storedSessionId) {
+  const profile = routeTargetProfile(route)
+  const resumed = await host.requestProfile(route, 'session.resume', {
+    session_id: storedSessionId,
+    source: 'desktop',
+    omit_messages: true,
+    ...(profile ? { profile } : {})
+  })
+  const runtimeId = String(resumed?.session_id || '').trim()
+  if (!runtimeId) {
+    throw new Error('无法激活会话运行时。')
+  }
+  if (typeof rememberMobileSessionRuntime === 'function') {
+    rememberMobileSessionRuntime(storedSessionId, runtimeId)
+  }
+  return runtimeId
+}
+
+async function submitMonitorPrompt(options) {
+  const input = options && typeof options === 'object' ? options : {}
+  const project = input.project
+  const route = project?.route
+  const prompt = String(input.prompt || '').trim()
+  const storedSessionId = String(input.session?.id || '').trim()
+  const images = Array.isArray(input.images) ? input.images : []
+  if (!route || (!prompt && !images.length) || !storedSessionId || typeof host.requestProfile !== 'function') {
+    throw new Error('Unable to send the prompt.')
+  }
+
+  let release = null
+  try {
+    if (typeof host.retainProfile === 'function') {
+      release = await host.retainProfile(route)
+    }
+    const runtimeId = await resolveMonitorRuntimeSessionId(route, storedSessionId)
+    for (const image of images) {
+      const attached = await host.requestProfile(route, 'image.attach_bytes', monitorImageAttachPayload(image, runtimeId))
+      if (!attached?.attached) {
+        throw new Error('Image attachment was rejected.')
+      }
+    }
+    const submitted = await host.requestProfile(route, 'prompt.submit', { session_id: runtimeId, text: prompt })
+    if (submitted?.ok === false) {
+      throw new Error('The prompt was rejected.')
+    }
+    return submitted && typeof submitted === 'object' ? submitted : { ok: true }
+  } finally {
+    try { release?.() } catch {}
+  }
+}
+
+async function switchMonitorSessionModel(project, session, modelChoice) {
+  const route = project?.route
+  const storedSessionId = String(session?.id || '').trim()
+  const model = String(modelChoice?.model || '').trim()
+  const provider = String(modelChoice?.provider || '').trim()
+  if (!route || !storedSessionId || !model || !provider || typeof host.requestProfile !== 'function') {
+    throw new Error('无法切换模型。')
+  }
+
+  let release = null
+  try {
+    if (typeof host.retainProfile === 'function') {
+      release = await host.retainProfile(route)
+    }
+    const runtimeId = await resolveMonitorRuntimeSessionId(route, storedSessionId)
+    const res = await host.requestProfile(route, 'config.set', {
+      confirm_expensive_model: true,
+      key: 'model',
+      session_id: runtimeId,
+      value: `${model} --provider ${provider} --session`
+    })
+    if (res?.error) {
+      throw new Error(String(res.error.message || '模型切换被拒绝。'))
+    }
+    return res && typeof res === 'object' ? res : { ok: true }
+  } finally {
+    try { release?.() } catch {}
+  }
+}
+
+async function stopMonitorSessionTask(project, session) {
+  const route = project?.route
+  const storedSessionId = String(session?.id || '').trim()
+  if (!route || !storedSessionId || typeof host.requestProfile !== 'function') {
+    throw new Error('无法停止任务。')
+  }
+
+  let release = null
+  try {
+    if (typeof host.retainProfile === 'function') {
+      release = await host.retainProfile(route)
+    }
+    let runtimeId = ''
+    try {
+      runtimeId = await resolveMonitorRuntimeSessionId(route, storedSessionId)
+    } catch {
+      // 容错：直接尝试用 storedSessionId 发送中断
+      runtimeId = storedSessionId
+    }
+    const res = await host.requestProfile(route, 'session.interrupt', {
+      session_id: runtimeId
+    })
+    if (res?.error) {
+      throw new Error(String(res.error.message || '停止任务请求被拒绝。'))
+    }
+    return res && typeof res === 'object' ? res : { status: 'interrupted' }
   } finally {
     try { release?.() } catch {}
   }
@@ -1583,6 +3012,18 @@ function projectRemoteLabel(project) {
   return isHomeProject(project) ? '' : String(project?.remoteLabel || '').trim()
 }
 
+function monitorProjectGatewayLabel(project) {
+  const route = project?.route
+  if (!route) return '本地网关'
+  const remote = route.mode === 'remote' || Boolean(projectRemoteLabel(project))
+  const source = remote
+    ? String(project?.sourceLabel || projectRemoteLabel(project) || route.connectionId || '远程网关').trim()
+    : '本地网关'
+  const profile = routeTargetProfile(route)
+  const profileLabel = profile && profile.toLowerCase() !== PROFILE_SCOPE_DEFAULT ? profile : ''
+  return [source, profileLabel].filter(Boolean).join(' · ')
+}
+
 function projectSourceBadge(project) {
   const profile = String(project?.profile || '').trim()
   const profileLabel = profile && profile.toLowerCase() !== PROFILE_SCOPE_DEFAULT ? profile : ''
@@ -1906,7 +3347,28 @@ function subscribeGatewaySessionEvents() {
     }, GATEWAY_EVENT_REFRESH_DEBOUNCE_MS)
   }
 
-  const dispose = host.onEvent('*', refreshFromEvent)
+  const dispose = host.onEvent('*', event => {
+    refreshFromEvent(event)
+    const sessionId = canonicalMobileSessionId(mobileEventSessionId(event))
+    if (MOBILE_TRANSCRIPT_EVENT_TYPES.has(event.type)) {
+      if (event.type === 'message.complete') noteMobileTurnComplete(sessionId)
+      else if (event.type !== 'todo.updated') noteMobileTurnActivity(sessionId)
+      if (sessionId) {
+        scheduleMobileTranscriptPush(sessionId)
+      } else {
+        for (const id of mobileWatchedSessionIds) scheduleMobileTranscriptPush(id)
+      }
+    }
+    if (MOBILE_ACTIVITY_EVENT_TYPES.has(event.type) && sessionId) {
+      if (event.type.startsWith('subagent.') && event.type !== 'subagent.complete') {
+        noteMobileTurnActivity(sessionId)
+      }
+      applyMobileActivityEvent(event, sessionId)
+    }
+    if (MOBILE_SNAPSHOT_EVENT_TYPES.has(event.type)) {
+      scheduleMobileBridgeSnapshot()
+    }
+  })
   return () => {
     if (timer) {
       window.clearTimeout(timer)
@@ -3064,6 +4526,30 @@ function useGatewaySessionsQuery(profileScopeOverride) {
   return { prefs, profileScope, sessionLimit, sessionsQuery, sessionsQueryKey }
 }
 
+function GatewayMobileChip() {
+  const online = useValue($mobileBridgeStatus)
+  return jsxs('button', {
+    className: 'inline-flex items-center gap-1 font-mono text-[11px] text-slate-500 hover:text-slate-800 transition px-1.5 py-0.5 rounded cursor-pointer',
+    onClick: () => {
+      host.notify({
+        kind: 'info',
+        message: online
+          ? 'Overlook 移动端中继已连接，手机可直接访问局域网 IP:9999 实时监控！'
+          : 'Overlook 移动端中继未运行。请运行 node overlook/server/server.js 启动服务。'
+      })
+    },
+    title: online ? 'Overlook 移动端中继：在线' : 'Overlook 移动端中继：未连接 (端口 9999)',
+    type: 'button',
+    children: [
+      jsx(Codicon, { name: 'device-mobile', size: '0.8rem' }),
+      jsx('span', {
+        className: cn('size-1.5 rounded-full', online ? 'bg-emerald-500' : 'bg-slate-300'),
+        'aria-hidden': true
+      }),
+      jsx('span', { children: online ? '移动端' : '移动离线' })
+    ]
+  })
+}
 function GatewayInboxChip() {
   const { prefs, sessionsQuery } = useGatewaySessionsQuery()
   const inbox = gatewayInboxSummary(sessionsQuery.data?.groups, prefs.hideScheduled)
@@ -3139,49 +4625,695 @@ function openMonitoredSession(project, session) {
   })
 }
 
+function MonitorImageThumbnail({ path, onZoom }) {
+  const [src, setSrc] = useState(null)
+  const isUrl = /^(?:https?|data):/i.test(path)
+
+  useEffect(() => {
+    let alive = true
+    if (isUrl) {
+      setSrc(path)
+      return
+    }
+    // 尝试读取本地图片文件的 Data URL
+    const load = window.hermesDesktop?.readFileDataUrl?.(path)
+    if (load && typeof load.then === 'function') {
+      load.then(url => {
+        if (alive && url) setSrc(url)
+      }).catch(() => {})
+    } else {
+      // 容错：file:/// 本地路径
+      const normalized = path.replace(/\\/g, '/')
+      const fileUrl = normalized.startsWith('/') ? `file://${normalized}` : `file:///${normalized}`
+      setSrc(fileUrl)
+    }
+    return () => { alive = false }
+  }, [path, isUrl])
+
+  return jsx('div', {
+    className: 'codex-monitor-img-thumb',
+    onClick: () => onZoom(src || path),
+    title: '点击放大查看图片',
+    children: src
+      ? jsx('img', { alt: '图片附件', src }, 'img')
+      : jsx('div', { className: 'flex h-full w-full items-center justify-center bg-slate-100 text-[9px] text-slate-400', children: '加载中…' }, 'loading')
+  })
+}
+
 function MonitorMessageRow({ row }) {
+  const [lightboxSrc, setLightboxSrc] = useState(null)
+
   if (row.kind === 'status') {
     return jsx('div', {
-      className: 'codex-monitor-status text-[0.68rem] italic text-(--ui-text-quaternary)',
+      className: 'codex-monitor-status text-[0.5875rem] italic text-(--ui-text-quaternary)',
       children: row.text
     }, row.key)
   }
   const role = row.message.role
+  const stamp = monitorMessageStamp(row.message)
+
+  // 提取用户消息中的图片路径并清洗提示协议文本
+  const parsed = useMemo(() => extractMonitorMessageImages(row.text), [row.text])
+  const displayText = parsed.cleanedText || (parsed.imagePaths.length ? '' : row.text)
+  const images = parsed.imagePaths
+
   if (role === 'user') {
-    return jsx('div', {
-      className: 'codex-monitor-message-user text-[0.7rem] leading-relaxed text-foreground/85',
-      children: row.text
+    return jsxs('div', {
+      className: 'codex-monitor-message-user-wrap',
+      children: [
+        jsxs('div', { className: 'codex-monitor-message-meta', children: [jsx('span', { children: '用户' }, 'who'), stamp ? jsx('span', { children: stamp }, 'time') : null] }, 'meta'),
+        jsxs('div', {
+          className: 'codex-monitor-message-user text-[0.625rem] leading-relaxed text-foreground/85',
+          children: [
+            displayText ? jsx('div', { children: displayText }, 'text') : null,
+            images.length > 0
+              ? jsx('div', {
+                  className: 'codex-monitor-image-gallery',
+                  children: images.map((imgPath, i) => jsx(MonitorImageThumbnail, {
+                    onZoom: setLightboxSrc,
+                    path: imgPath
+                  }, `img-${i}`))
+                }, 'gallery')
+              : null
+          ]
+        }, 'body'),
+        lightboxSrc
+          ? jsxs('div', {
+              className: 'codex-monitor-lightbox',
+              onClick: () => setLightboxSrc(null),
+              children: [
+                jsx('img', {
+                  alt: '放大查看',
+                  className: 'codex-monitor-lightbox-img',
+                  onClick: e => e.stopPropagation(),
+                  src: lightboxSrc
+                }, 'large-img'),
+                jsx('button', {
+                  'aria-label': '关闭全屏查看',
+                  className: 'codex-monitor-lightbox-close',
+                  onClick: () => setLightboxSrc(null),
+                  type: 'button',
+                  children: jsx(Codicon, { name: 'close', size: '1rem' })
+                }, 'close-btn')
+              ]
+            }, 'lightbox')
+          : null
+      ]
     }, row.key)
   }
-  return jsx('div', {
-    className: 'codex-monitor-markdown text-foreground/90',
-    children: jsx(Streamdown, {
-      controls: false,
-      mode: 'static',
-      parseIncompleteMarkdown: false,
-      children: row.text
-    })
+  return jsxs('div', {
+    className: 'codex-monitor-message-assistant-wrap',
+    children: [
+      jsxs('div', { className: 'codex-monitor-message-meta', children: [jsx('span', { children: '助手' }, 'who'), stamp ? jsx('span', { children: stamp }, 'time') : null] }, 'meta'),
+      jsxs('div', {
+        className: 'codex-monitor-markdown text-[0.625rem] text-foreground/90',
+        children: [
+          displayText ? jsx(Streamdown, {
+            controls: false,
+            mode: 'static',
+            parseIncompleteMarkdown: false,
+            children: displayText
+          }, 'prose') : null,
+          images.length > 0
+            ? jsx('div', {
+                className: 'codex-monitor-image-gallery',
+                children: images.map((imgPath, i) => jsx(MonitorImageThumbnail, {
+                  onZoom: setLightboxSrc,
+                  path: imgPath
+                }, `img-${i}`))
+              }, 'gallery')
+            : null
+        ]
+      }, 'body'),
+      lightboxSrc
+        ? jsxs('div', {
+            className: 'codex-monitor-lightbox',
+            onClick: () => setLightboxSrc(null),
+            children: [
+              jsx('img', {
+                alt: '放大查看',
+                className: 'codex-monitor-lightbox-img',
+                onClick: e => e.stopPropagation(),
+                src: lightboxSrc
+              }, 'large-img'),
+              jsx('button', {
+                'aria-label': '关闭全屏查看',
+                className: 'codex-monitor-lightbox-close',
+                onClick: () => setLightboxSrc(null),
+                type: 'button',
+                children: jsx(Codicon, { name: 'close', size: '1rem' })
+              }, 'close-btn')
+            ]
+          }, 'lightbox')
+        : null
+    ]
   }, row.key)
 }
 
-function MonitorEmptySlot({ index }) {
-  const seat = index + 1
-  return jsxs('section', {
-    'aria-label': `监控卡座 ${seat} 空闲`,
-    className: 'codex-monitor-card codex-monitor-empty-slot',
-    'data-monitor-slot': String(seat),
+function MonitorNewSessionTile({ onCreate, onQueue, queueCount }) {
+  const waiting = Number(queueCount) || 0
+  return jsxs('div', {
+    'aria-label': '开启新会话窗口',
+    className: 'codex-monitor-new-tile',
+    onClick: onCreate,
     children: [
-      jsx('span', {
-        className: 'mb-2 flex size-8 items-center justify-center rounded-xl border border-(--ui-stroke-tertiary) bg-white',
-        children: jsx(Codicon, { name: 'add', size: '0.85rem' })
-      }, 'icon'),
-      jsx('span', { className: 'text-[0.68rem] font-medium', children: `卡座 ${seat} 空闲` }, 'label'),
-      jsx('span', { className: 'mt-1 text-[0.6rem]', children: '新的活跃会话会自动入座' }, 'hint')
+      jsx('span', { className: 'codex-monitor-new-tile-icon', children: jsx(Codicon, { name: 'add', size: '1.4rem' }) }, 'icon'),
+      jsx('span', { className: 'text-sm font-semibold', children: '开启新会话窗口' }, 'title'),
+      jsx('span', { className: 'max-w-xs text-xs leading-relaxed', children: '无并发限制，点击随时弹性开启新会话，或从队列中拉取未分配会话' }, 'hint'),
+      jsxs('div', {
+        className: 'mt-1 flex items-center gap-2',
+        onClick: event => event.stopPropagation(),
+        children: [
+          jsx(Button, {
+            disabled: waiting <= 0,
+            onClick: event => {
+              event.stopPropagation()
+              onQueue?.()
+            },
+            size: 'xs',
+            type: 'button',
+            variant: 'outline',
+            children: `从待命队列接入 (${waiting})`
+          }, 'queue'),
+          jsx(Button, {
+            onClick: event => {
+              event.stopPropagation()
+              onCreate?.()
+            },
+            size: 'xs',
+            type: 'button',
+            children: '+ 空白会话'
+          }, 'blank')
+        ]
+      }, 'actions')
     ]
   })
 }
 
-function MonitorSessionCard({ appearance, entry, slotIndex }) {
+function MonitorSessionComposer({
+  onEnqueue,
+  onSendNow,
+  onSendQueueNow,
+  onStop,
+  onRemoveQueueItem,
+  onClearQueue,
+  placeholder,
+  queue = [],
+  status
+}) {
+  const [text, setText] = useState('')
+  const [images, setImages] = useState([])
+  const [sending, setSending] = useState(false)
+  const [queueExpanded, setQueueExpanded] = useState(false)
+  const fileRef = useRef(null)
+  const isBusy = status === '执行中'
+
+  const enqueue = () => {
+    const prompt = text.trim()
+    if (!prompt && !images.length) return
+    onEnqueue?.({ images, prompt, text })
+    setText('')
+    setImages([])
+  }
+
+  const sendDirect = async () => {
+    const prompt = text.trim()
+    if ((!prompt && !images.length) || sending) return
+    setSending(true)
+    try {
+      await onSendNow?.(prompt, images)
+      setText('')
+      setImages([])
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : '无法发送到该会话。'
+      host.notify({ kind: 'error', message: msg })
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const addImages = async event => {
+    const files = [...(event.target.files || [])]
+    event.target.value = ''
+    if (!files.length) return
+    try {
+      const next = await Promise.all(files.map(readMonitorImageFile))
+      setImages(current => [...current, ...next])
+    } catch (error) {
+      host.notify({
+        kind: 'error',
+        message: error instanceof Error ? error.message : '图片读取失败。'
+      })
+    }
+  }
+
+  const onPaste = async event => {
+    const clipboard = event.clipboardData
+    if (!clipboard) return
+    const imageFiles = []
+    const items = clipboard.items ? [...clipboard.items] : []
+    for (const item of items) {
+      if (item.type && item.type.startsWith('image/')) {
+        const file = item.getAsFile()
+        if (file) imageFiles.push(file)
+      }
+    }
+    if (!imageFiles.length && clipboard.files && clipboard.files.length) {
+      for (const file of clipboard.files) {
+        if (file.type && file.type.startsWith('image/')) {
+          imageFiles.push(file)
+        }
+      }
+    }
+    if (imageFiles.length > 0) {
+      event.preventDefault()
+      try {
+        const next = await Promise.all(imageFiles.map(readMonitorImageFile))
+        setImages(current => [...current, ...next])
+      } catch (error) {
+        host.notify({
+          kind: 'error',
+          message: error instanceof Error ? error.message : '粘贴图片失败。'
+        })
+      }
+    }
+  }
+
+  return jsxs('footer', {
+    className: 'shrink-0 border-t border-slate-200 bg-white p-2.5',
+    children: [
+      queue.length > 0
+        ? jsxs('div', {
+            className: 'mb-1.5 overflow-hidden rounded-md border border-amber-200 bg-amber-50/50',
+            children: [
+              jsxs('div', {
+                className: 'codex-monitor-queue-bar',
+                children: [
+                  jsxs('button', {
+                    className: 'flex items-center gap-1.5 font-medium text-amber-800 hover:text-amber-900',
+                    onClick: () => setQueueExpanded(curr => !curr),
+                    type: 'button',
+                    children: [
+                      jsx(Codicon, { name: queueExpanded ? 'chevron-down' : 'chevron-right', size: '0.75rem' }),
+                      jsx('span', { children: `消息队列 (${queue.length})` }),
+                      jsx('span', { className: 'text-[9px] text-amber-600', children: '排队待发' })
+                    ]
+                  }, 'toggle'),
+                  jsxs('div', {
+                    className: 'flex items-center gap-1',
+                    children: [
+                      jsx(Button, {
+                        disabled: sending,
+                        onClick: async () => {
+                          setSending(true)
+                          try {
+                            await onSendQueueNow?.()
+                          } finally {
+                            setSending(false)
+                          }
+                        },
+                        size: 'xs',
+                        variant: 'secondary',
+                        children: '立即发送队列'
+                      }, 'send-queue'),
+                      jsx(Button, {
+                        className: 'text-slate-400 hover:text-slate-600',
+                        disabled: sending,
+                        onClick: onClearQueue,
+                        size: 'icon-xs',
+                        title: '清空队列',
+                        variant: 'ghost',
+                        children: jsx(Codicon, { name: 'clear-all', size: '0.75rem' })
+                      }, 'clear')
+                    ]
+                  }, 'actions')
+                ]
+              }, 'header'),
+              queueExpanded
+                ? jsx('div', {
+                    className: 'codex-monitor-queue-list',
+                    children: queue.map((item, idx) => jsxs('div', {
+                      className: 'codex-monitor-queue-item',
+                      children: [
+                        jsxs('span', {
+                          className: 'truncate text-slate-700',
+                          children: [
+                            jsx('span', { className: 'mr-1 font-mono text-[9px] text-slate-400', children: `#${idx + 1}` }),
+                            item.prompt || (item.images?.length ? `[${item.images.length} 张图片]` : '未命名指令')
+                          ]
+                        }, 'text'),
+                        jsx('button', {
+                          'aria-label': '从队列移除',
+                          className: 'text-slate-400 hover:text-rose-500',
+                          onClick: () => onRemoveQueueItem?.(item.id),
+                          type: 'button',
+                          children: jsx(Codicon, { name: 'close', size: '0.65rem' })
+                        }, 'del')
+                      ]
+                    }, item.id || idx))
+                  }, 'list')
+                : null
+            ]
+          }, 'queue-box')
+        : null,
+      images.length
+        ? jsxs('div', {
+            className: 'codex-monitor-new-images mb-1.5',
+            children: images.map(image => jsxs('span', {
+              className: 'codex-monitor-new-thumb',
+              title: image.name,
+              children: [
+                jsx('img', { alt: image.name, src: image.dataUrl }, 'preview'),
+                jsx('button', {
+                  'aria-label': `移除 ${image.name}`,
+                  className: 'codex-monitor-new-thumb-remove',
+                  disabled: sending,
+                  onClick: () => setImages(current => current.filter(item => item.id !== image.id)),
+                  type: 'button',
+                  children: jsx(Codicon, { name: 'close', size: '0.65rem' })
+                }, 'remove')
+              ]
+            }, image.id))
+          }, 'thumbs')
+        : null,
+      jsxs('div', {
+        className: 'codex-monitor-composer',
+        children: [
+          jsx('input', {
+            accept: MONITOR_IMAGE_ACCEPT,
+            className: 'hidden',
+            disabled: sending,
+            multiple: true,
+            onChange: event => { void addImages(event) },
+            ref: fileRef,
+            type: 'file'
+          }, 'file'),
+          jsx('button', {
+            'aria-label': '上传文件',
+            className: 'text-slate-400',
+            disabled: sending,
+            onClick: () => fileRef.current?.click(),
+            title: '上传文件',
+            type: 'button',
+            children: jsx(Codicon, { name: 'add', size: '0.85rem' })
+          }, 'attach'),
+          jsx('input', {
+            className: 'codex-monitor-composer-input',
+            disabled: sending,
+            onChange: event => setText(event.target.value),
+            onKeyDown: event => {
+              if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent?.isComposing && event.keyCode !== 229) {
+                event.preventDefault()
+                // 默认回车加入队列
+                enqueue()
+              }
+            },
+            onPaste,
+            placeholder: placeholder || '输入消息加入队列… (Enter 入队)',
+            value: text
+          }, 'input'),
+          jsx(Button, {
+            'aria-label': '加入队列',
+            className: 'size-6 shrink-0 text-amber-700 hover:bg-amber-100 hover:text-amber-800',
+            disabled: sending || (!text.trim() && !images.length),
+            onClick: enqueue,
+            size: 'icon-xs',
+            title: '加入消息队列 (Enter)',
+            variant: 'ghost',
+            children: jsx(Codicon, { name: 'list-ordered', size: '0.8rem' })
+          }, 'enqueue'),
+          isBusy && !text.trim() && !images.length
+            ? jsx(Button, {
+                'aria-label': '停止任务',
+                className: 'size-7 shrink-0 bg-rose-50 text-rose-600 hover:bg-rose-100 hover:text-rose-700 border border-rose-200',
+                disabled: sending,
+                onClick: async () => {
+                  setSending(true)
+                  try {
+                    await onStop?.()
+                    host.notify({ kind: 'info', message: '已请求停止当前任务。' })
+                  } catch (err) {
+                    host.notify({ kind: 'error', message: err instanceof Error ? err.message : '无法停止任务。' })
+                  } finally {
+                    setSending(false)
+                  }
+                },
+                size: 'icon-xs',
+                title: '停止当前任务',
+                variant: 'secondary',
+                children: jsx(Codicon, { name: 'debug-stop', size: '0.8rem' })
+              }, 'stop')
+            : jsx(Button, {
+                'aria-label': '立即发送',
+                className: 'size-7 shrink-0',
+                disabled: sending || (!text.trim() && !images.length),
+                onClick: () => void sendDirect(),
+                size: 'icon-xs',
+                title: '立即单独发送',
+                children: jsx(Codicon, { name: 'arrow-right', size: '0.8rem' })
+              }, 'send')
+        ]
+      }, 'bar')
+    ]
+  })
+}
+
+function MonitorLayoutSwitch({ layout, onChange }) {
+  const current = normalizeMonitorLayout(layout)
+  const options = [
+    ['tile', '平铺流'],
+    ['compact', '自适应网格'],
+    ['list', '列表']
+  ]
+  return jsx('div', {
+    'aria-label': '监控室布局',
+    className: 'codex-monitor-layout-switch',
+    children: options.map(([value, label]) => jsx('button', {
+      'aria-pressed': current === value,
+      onClick: () => onChange(value),
+      type: 'button',
+      children: label
+    }, value))
+  })
+}
+
+function MonitorQueueMenu({ queue, onOpenDialog }) {
+  const waiting = Array.isArray(queue) ? queue : []
+  return jsxs('button', {
+    className: 'codex-monitor-queue-chip',
+    onClick: onOpenDialog,
+    title: '查看待命队列会话',
+    type: 'button',
+    children: [
+      jsx('span', { className: 'inline-block size-2 rounded-full bg-amber-500' }, 'dot'),
+      jsx('span', { children: '待命队列:' }, 'label'),
+      jsx('span', { className: 'rounded border border-amber-200 bg-white px-1.5 py-0.5 font-mono text-[11px] font-semibold', children: `${waiting.length} 个会话` }, 'count')
+    ]
+  })
+}
+
+function MonitorQueueSelectDialog({ open, onOpenChange, queue, onSelect }) {
+  const [search, setSearch] = useState('')
+  const list = Array.isArray(queue) ? queue : []
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return list
+    return list.filter(entry => {
+      const title = sessionRowTitle(entry.session).toLowerCase()
+      const project = projectDisplayLabel(entry.project).toLowerCase()
+      const preview = String(entry.session?.preview || '').toLowerCase()
+      return title.includes(q) || project.includes(q) || preview.includes(q)
+    })
+  }, [list, search])
+
+  useEffect(() => {
+    if (!open) setSearch('')
+  }, [open])
+
+  return jsx(Dialog, {
+    onOpenChange,
+    open,
+    children: jsxs(DialogContent, {
+      className: 'max-w-lg',
+      children: [
+        jsxs(DialogHeader, {
+          children: [
+            jsx(DialogTitle, { children: '从待命队列接入会话' }),
+            jsx('p', {
+              className: 'text-xs text-slate-500',
+              children: `当前待命队列中有 ${list.length} 个会话，选择并平铺到监控室。`
+            })
+          ]
+        }, 'header'),
+        list.length > 5
+          ? jsx('div', {
+              className: 'mb-1 px-1',
+              children: jsx(Input, {
+                className: 'h-8 text-xs',
+                onChange: e => setSearch(e.target.value),
+                placeholder: '搜索待命会话…',
+                value: search
+              })
+            }, 'search')
+          : null,
+        jsx('div', {
+          className: 'max-h-80 overflow-y-auto space-y-1.5 p-1',
+          children: filtered.length
+            ? filtered.map(entry => {
+                const title = sessionRowTitle(entry.session)
+                const projectLabel = projectDisplayLabel(entry.project)
+                const source = projectSourceBadge(entry.project)
+                const time = sessionRowTime(entry.session)
+                const model = monitorSessionModelLabel(entry.session)
+                const preview = String(entry.session?.preview || '').trim()
+
+                return jsxs('button', {
+                  className: 'group flex w-full flex-col gap-1 rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:border-emerald-400 hover:bg-emerald-50/40 hover:shadow-xs',
+                  onClick: () => {
+                    onSelect(entry.key)
+                    onOpenChange(false)
+                  },
+                  type: 'button',
+                  children: [
+                    jsxs('div', {
+                      className: 'flex items-center justify-between gap-2',
+                      children: [
+                        jsx('span', { className: 'truncate text-xs font-bold text-slate-900 group-hover:text-emerald-800', children: title }, 'title'),
+                        time ? jsx('span', { className: 'shrink-0 font-mono text-[10px] text-slate-400', children: time }, 'time') : null
+                      ]
+                    }, 'top'),
+                    jsxs('div', {
+                      className: 'flex items-center gap-1.5 font-mono text-[11px] text-slate-500',
+                      children: [
+                        jsx('span', { className: 'truncate', children: projectLabel }, 'proj'),
+                        source ? jsx('span', { children: '·' }, 'dot1') : null,
+                        source ? jsx('span', { className: 'truncate', children: source }, 'src') : null,
+                        model ? jsx('span', { children: '·' }, 'dot2') : null,
+                        model ? jsx('span', { className: 'truncate text-slate-600', children: model }, 'mod') : null
+                      ]
+                    }, 'meta'),
+                    preview
+                      ? jsx('p', { className: 'line-clamp-2 text-[11px] text-slate-600 leading-relaxed', children: preview }, 'preview')
+                      : null
+                  ]
+                }, entry.key)
+              })
+            : jsx('div', {
+                className: 'py-8 text-center text-xs text-slate-400',
+                children: list.length === 0 ? '待命队列为空' : '未找到匹配的待命会话'
+              })
+        }, 'list'),
+        jsx(DialogFooter, {
+          children: jsx(Button, { onClick: () => onOpenChange(false), variant: 'ghost', children: '关闭' })
+        }, 'footer')
+      ]
+    })
+  })
+}
+
+function MonitorCardModelPicker({ project, session, currentModel, onModelChanged }) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const [switching, setSwitching] = useState(false)
+  const modelQuery = useQuery({
+    enabled: open && Boolean(project?.route),
+    queryFn: () => fetchMonitorModelOptions(project),
+    queryKey: [...MONITOR_QUERY_KEY, 'models', project?.key || ''],
+    retry: false,
+    staleTime: 120_000
+  })
+  const catalog = useMemo(() => normalizeMonitorModelOptions(modelQuery.data), [modelQuery.data])
+  const activeLabel = currentModel || catalog.choices[0]?.model || '选择模型'
+
+  const filteredChoices = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (!q) return catalog.choices
+    return catalog.choices.filter(c =>
+      String(c.model || '').toLowerCase().includes(q) ||
+      String(c.provider || '').toLowerCase().includes(q) ||
+      String(c.label || '').toLowerCase().includes(q)
+    )
+  }, [catalog.choices, search])
+
+  const handleSelect = async choice => {
+    if (!choice || switching) return
+    setSwitching(true)
+    try {
+      await switchMonitorSessionModel(project, session, choice)
+      onModelChanged?.(choice.model)
+      host.notify({ kind: 'success', message: `已切换为 ${choice.model}` })
+      setOpen(false)
+      setSearch('')
+    } catch (err) {
+      host.notify({
+        kind: 'error',
+        message: err instanceof Error ? err.message : '切换模型失败。'
+      })
+    } finally {
+      setSwitching(false)
+    }
+  }
+
+  return jsxs(DropdownMenu, {
+    onOpenChange: nextOpen => {
+      setOpen(nextOpen)
+      if (!nextOpen) setSearch('')
+    },
+    open,
+    children: [
+      jsx(DropdownMenuTrigger, {
+        asChild: true,
+        children: jsxs('button', {
+          className: 'inline-flex max-w-[13rem] items-center gap-1 truncate rounded bg-slate-100/80 px-1.5 py-0.5 font-mono text-[9.5px] text-slate-600 hover:bg-slate-200/80 hover:text-slate-900 transition border border-slate-200/60',
+          title: `当前模型: ${activeLabel} (点击切换)`,
+          type: 'button',
+          children: [
+            jsx(Codicon, { name: 'hubot', size: '0.65rem' }),
+            jsx('span', { className: 'truncate font-medium text-slate-700', children: activeLabel }, 'label'),
+            jsx(Codicon, { name: switching ? 'loading' : 'chevron-down', size: '0.6rem', spinning: switching }, 'icon')
+          ]
+        })
+      }, 'trigger'),
+      jsxs(DropdownMenuContent, {
+        align: 'start',
+        className: 'max-h-72 overflow-hidden w-64 p-1.5 flex flex-col',
+        children: [
+          jsx('div', {
+            className: 'p-1 pb-1.5',
+            children: jsx(Input, {
+              autoFocus: true,
+              className: 'h-6 text-[10px] px-2 bg-slate-50',
+              onChange: e => setSearch(e.target.value),
+              onClick: e => e.stopPropagation(),
+              onKeyDown: e => e.stopPropagation(),
+              placeholder: '搜索模型名称或提供商…',
+              value: search
+            })
+          }, 'search-box'),
+          jsx('div', {
+            className: 'max-h-52 overflow-y-auto flex flex-col gap-0.5',
+            children: filteredChoices.length
+              ? filteredChoices.map(choice => jsxs(DropdownMenuItem, {
+                  className: 'flex items-center justify-between text-[10px] py-1 px-2 cursor-pointer',
+                  disabled: switching,
+                  onSelect: () => void handleSelect(choice),
+                  children: [
+                    jsx('span', { className: 'truncate font-medium text-slate-800', children: choice.model }, 'm'),
+                    jsx('span', { className: 'ml-2 text-[9px] text-slate-400 font-mono shrink-0', children: choice.provider }, 'p')
+                  ]
+                }, choice.key))
+              : jsx(DropdownMenuItem, {
+                  disabled: true,
+                  children: modelQuery.isLoading ? '正在加载模型…' : (catalog.choices.length ? '未找到匹配模型' : '暂无可用模型')
+                }, 'empty')
+          }, 'items')
+        ]
+      }, 'content')
+    ]
+  })
+}
+
+function MonitorSessionCard({ appearance, entry, slotIndex, onDismiss }) {
   const { project, session } = entry
   const transcriptQuery = useQuery({
     queryKey: [...MONITOR_QUERY_KEY, routeKey(project.route), session.id],
@@ -3220,37 +5352,99 @@ function MonitorSessionCard({ appearance, entry, slotIndex }) {
   }, [entry.key, transcriptVersion])
 
   const color = projectIconColor(appearance, project.key)
-  const icon = isHomeProject(project)
-    ? (projectAppearanceFor(appearance, project.key)?.icon ? projectIconName(appearance, project.key) : 'home')
-    : projectIconName(appearance, project.key)
   const source = projectSourceBadge(project)
+  const gatewayLabel = monitorProjectGatewayLabel(project)
+  const status = monitorSessionStatusLabel(session, messages)
+  const [overrideModel, setOverrideModel] = useState('')
+  const model = overrideModel || monitorSessionModelLabel(session)
+  const tokens = monitorSessionTokenLabel(session)
+  const queryClient = useQueryClient()
+  const ready = status === '就绪待命中'
+  const sessionQueues = useValue($monitorMessageQueueBySession)
+  const queue = sessionQueues[session.id] || []
+
+  const updateQueue = updater => {
+    const currentAll = $monitorMessageQueueBySession.get()
+    const currentQueue = currentAll[session.id] || []
+    const nextQueue = typeof updater === 'function' ? updater(currentQueue) : updater
+    $monitorMessageQueueBySession.set({
+      ...currentAll,
+      [session.id]: nextQueue
+    })
+  }
+
+  const handleEnqueue = item => {
+    updateQueue(curr => [
+      ...curr,
+      {
+        id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        images: item.images || [],
+        prompt: item.prompt || '',
+        queuedAt: Date.now()
+      }
+    ])
+  }
+
+  const handleRemoveQueueItem = itemId => {
+    updateQueue(curr => curr.filter(item => item.id !== itemId))
+  }
+
+  const handleClearQueue = () => {
+    updateQueue([])
+  }
+
+  const handleSendQueueNow = async () => {
+    const currentQueue = $monitorMessageQueueBySession.get()[session.id] || []
+    if (!currentQueue.length) return
+    const first = currentQueue[0]
+    noteMobileTurnActivity(session.id)
+    if (first.prompt) {
+      inflightUserPromptBySession.set(session.id, {
+        prompt: first.prompt,
+        images: first.images || [],
+        timestamp: Date.now()
+      })
+    }
+    await submitMonitorPrompt({ images: first.images, project, prompt: first.prompt, session })
+    updateQueue(curr => curr.slice(1))
+    void queryClient.invalidateQueries({ queryKey: [...MONITOR_QUERY_KEY, routeKey(project.route), session.id] })
+    void queryClient.invalidateQueries({ queryKey: GATEWAY_SESSIONS_KEY })
+    setTimeout(() => {
+      void queryClient.invalidateQueries({ queryKey: [...MONITOR_QUERY_KEY, routeKey(project.route), session.id] })
+    }, 600)
+  }
 
   return jsxs('section', {
     'aria-label': `监控会话 ${sessionRowTitle(session)}`,
     className: 'codex-monitor-card',
     'data-monitor-session': session.id,
     'data-monitor-slot': String(slotIndex + 1),
-    style: { '--monitor-project-color': color || '#64748b' },
+    style: { '--monitor-project-color': color || '#10b981' },
     children: [
       jsxs('header', {
-        className: 'flex h-11 shrink-0 items-center gap-2 border-b border-(--ui-stroke-quaternary) px-3 pt-0.5',
+        className: 'flex shrink-0 items-center gap-2.5 border-b border-slate-200 bg-slate-50/90 px-3.5 py-2.5',
         children: [
-          jsx('span', {
-            className: 'flex size-6 shrink-0 items-center justify-center rounded-lg bg-(--ui-bg-secondary)',
-            style: color ? { color } : undefined,
-            children: jsx(Codicon, { name: icon, size: '0.85rem' })
-          }, 'project-icon'),
+          jsx('span', { className: 'codex-monitor-index', children: monitorSessionIndexLabel(slotIndex) }, 'index'),
           jsxs('div', {
             className: 'min-w-0 flex-1',
             children: [
-              jsx('div', { className: 'truncate text-xs font-semibold text-foreground', title: sessionRowTitle(session), children: sessionRowTitle(session) }, 'title'),
-              jsx('div', {
-                className: 'flex min-w-0 items-center gap-1.5 text-[0.6rem] text-(--ui-text-quaternary)',
+              jsxs('div', {
+                className: 'flex min-w-0 items-center gap-1.5',
                 children: [
-                  jsx('span', { className: 'truncate', children: projectDisplayLabel(project) }, 'project'),
-                  source ? jsx('span', { 'aria-hidden': true, children: '·' }, 'dot') : null,
-                  source ? jsx('span', { className: 'truncate', children: source }, 'source') : null,
-                  jsx('span', { className: 'ml-auto shrink-0 tabular-nums', children: sessionRowTime(session) }, 'time')
+                  jsx('h2', { className: 'truncate text-xs font-bold text-slate-900', title: sessionRowTitle(session), children: sessionRowTitle(session) }, 'title'),
+                  jsx('span', { className: 'codex-monitor-status-pill shrink-0', 'data-status': status, children: status }, 'pill')
+                ]
+              }, 'title-row'),
+              jsxs('div', {
+                className: 'flex min-w-0 items-center gap-1.5 font-mono text-[10px] text-slate-500',
+                children: [
+                  jsx('span', { className: 'truncate font-medium text-slate-600', children: projectDisplayLabel(project) }, 'project'),
+                  jsx('span', { 'aria-hidden': true, children: '·' }, 'dot'),
+                  jsx('span', {
+                    className: 'truncate rounded bg-slate-200/60 px-1 py-0.2 text-[9.5px] text-slate-600 font-sans',
+                    title: `网关: ${gatewayLabel}`,
+                    children: gatewayLabel
+                  }, 'gateway')
                 ]
               }, 'meta')
             ]
@@ -3266,12 +5460,22 @@ function MonitorSessionCard({ appearance, entry, slotIndex }) {
             size: 'icon-xs',
             title: '打开完整会话',
             variant: 'ghost',
-            children: jsx(Codicon, { name: 'arrow-small-right', size: '0.8rem' })
-          }, 'open')
+            children: jsx(Codicon, { name: 'screen-full', size: '0.8rem' })
+          }, 'open'),
+          jsx(Button, {
+            'aria-label': `移出监控室 ${sessionRowTitle(session)}`,
+            className: 'size-7 shrink-0',
+            onClick: () => onDismiss?.(entry.key),
+            size: 'icon-xs',
+            title: '移出监控室',
+            variant: 'ghost',
+            children: jsx(Codicon, { name: 'close', size: '0.8rem' })
+          }, 'dismiss')
         ]
       }, 'header'),
       jsx('div', {
-        className: 'min-h-0 flex-1 overflow-y-auto px-3 py-2.5',
+        className: 'min-h-0 flex-1 overflow-y-auto bg-slate-50/40 px-3.5 py-3.5 select-text',
+        'data-selectable-text': 'true',
         ref: scrollRef,
         children: transcriptQuery.isLoading && messages.length === 0
           ? jsx('div', {
@@ -3290,11 +5494,54 @@ function MonitorSessionCard({ appearance, entry, slotIndex }) {
                 ]
               })
           : jsx('div', {
-                  className: 'flex min-h-full flex-col justify-end gap-2',
+                  className: 'flex min-h-full flex-col justify-end gap-3.5',
                   ref: contentRef,
                   children: messages.map(row => jsx(MonitorMessageRow, { row }, row.key))
                 })
-      }, 'transcript')
+      }, 'transcript'),
+      jsx(MonitorSessionComposer, {
+        onClearQueue: handleClearQueue,
+        onEnqueue: handleEnqueue,
+        onRemoveQueueItem: handleRemoveQueueItem,
+        onSendNow: async (prompt, images) => {
+          await submitMonitorPrompt({ images, project, prompt, session })
+          void queryClient.invalidateQueries({ queryKey: [...MONITOR_QUERY_KEY, routeKey(project.route), session.id] })
+          void queryClient.invalidateQueries({ queryKey: GATEWAY_SESSIONS_KEY })
+          setTimeout(() => {
+            void queryClient.invalidateQueries({ queryKey: [...MONITOR_QUERY_KEY, routeKey(project.route), session.id] })
+          }, 600)
+        },
+        onSendQueueNow: handleSendQueueNow,
+        onStop: async () => {
+          await stopMonitorSessionTask(project, session)
+          void queryClient.invalidateQueries({ queryKey: [...MONITOR_QUERY_KEY, routeKey(project.route), session.id] })
+        },
+        placeholder: ready ? '输入 Prompt 启动或加入队列… (Enter 入队)' : (status === '执行中' ? '输入下一步指令加入队列… (Enter 入队)' : '输入指令加入队列… (Enter 入队)'),
+        queue,
+        status
+      }, 'composer'),
+      tokens || sessionRowTime(session) || model
+        ? jsxs('div', {
+            className: 'flex shrink-0 items-center justify-between px-3.5 pb-2 font-mono text-[9.5px] text-slate-400 gap-2',
+            children: [
+              jsxs('div', {
+                className: 'flex items-center gap-1.5 min-w-0 flex-1 truncate',
+                children: [
+                  jsx(MonitorCardModelPicker, {
+                    currentModel: model,
+                    onModelChanged: setOverrideModel,
+                    project,
+                    session
+                  }, 'model-picker'),
+                  tokens || sessionRowTime(session)
+                    ? jsx('span', { className: 'truncate', children: [tokens, sessionRowTime(session)].filter(Boolean).join(' • ') }, 'meta')
+                    : null
+                ]
+              }, 'left-meta'),
+              jsx('span', { className: 'shrink-0', children: status === '执行中' ? '● 正在执行' : (ready ? '● 准备启动' : '● 正在监听反馈') }, 'live')
+            ]
+          }, 'usage')
+        : null
     ]
   }, entry.key)
 }
@@ -3557,65 +5804,124 @@ function SessionMonitorPage() {
       .flatMap(group => projectGroupsForGatewayGroup(group, prefs.hideScheduled)),
     [prefs.hideScheduled, sourceGroups]
   )
-  const candidates = useMemo(() => monitorSessionCandidates(projects), [projects])
+  const hiddenKeys = prefs.monitorHiddenKeys || []
+  const parkedKeys = prefs.monitorParkedKeys || []
+  const layout = normalizeMonitorLayout(prefs.monitorLayout)
+  const candidates = useMemo(
+    () => monitorDisplayedCandidates(projects, hiddenKeys, parkedKeys),
+    [hiddenKeys, parkedKeys, projects]
+  )
   const candidateByKey = useMemo(() => new Map(candidates.map(entry => [entry.key, entry])), [candidates])
-  const [slotKeys, setSlotKeys] = useState(() => Array(MONITOR_SESSION_LIMIT).fill(''))
+  const [slotKeys, setSlotKeys] = useState(() => [])
   const [createOpen, setCreateOpen] = useState(false)
-  const renderedSlotKeys = stabilizeMonitorSlotKeys(slotKeys, candidates, MONITOR_SESSION_LIMIT)
-  const slots = renderedSlotKeys.map(key => candidateByKey.get(key) || null)
-  const occupiedCount = slots.filter(Boolean).length
+  const [queueOpen, setQueueOpen] = useState(false)
+  const [now, setNow] = useState(() => Date.now())
+  const renderedSlotKeys = stabilizeMonitorSlotKeys(slotKeys, candidates)
+  const slots = renderedSlotKeys.map(key => candidateByKey.get(key)).filter(Boolean)
+  const occupiedCount = slots.length
+  const queue = useMemo(
+    () => monitorQueueCandidates(projects, renderedSlotKeys),
+    [projects, renderedSlotKeys]
+  )
 
   useEffect(() => {
     setSlotKeys(current => {
-      const next = stabilizeMonitorSlotKeys(current, candidates, MONITOR_SESSION_LIMIT)
+      const next = stabilizeMonitorSlotKeys(current, candidates)
       return next.length === current.length && next.every((key, index) => key === current[index]) ? current : next
     })
   }, [candidates])
 
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  const persistPrefs = patch => {
+    writeGatewaySessionPreferences({
+      ...prefs,
+      ...patch
+    })
+  }
   const failedSources = sourceGroups.filter(group => group.error).length
   const refresh = () => {
     void sessionsQuery.refetch()
     void queryClient.invalidateQueries({ queryKey: MONITOR_QUERY_KEY })
   }
+  const dismiss = key => {
+    const next = monitorHideSessionKeys(hiddenKeys, parkedKeys, key)
+    persistPrefs(next)
+  }
+  const park = key => {
+    const targetKey = String(key || '').trim()
+    if (!targetKey) return
+    const next = monitorParkSessionKeys(hiddenKeys, parkedKeys, targetKey)
+    persistPrefs(next)
+    const targetEntry = queue.find(q => q.key === targetKey) || candidates.find(c => c.key === targetKey)
+    const title = targetEntry?.session ? sessionRowTitle(targetEntry.session) : '会话'
+    host.notify({ kind: 'info', message: `已接入待命会话：${title}` })
+  }
+  const clock = new Date(now).toLocaleTimeString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' })
 
   return jsxs('div', {
-    className: 'flex h-full min-h-0 flex-col bg-white p-3 text-foreground',
+    className: 'codex-monitor-page text-foreground',
     'data-slot': 'codex-session-monitor',
     children: [
       jsxs('header', {
-        className: 'mb-3 flex h-10 shrink-0 items-center gap-3 px-1',
+        className: 'codex-monitor-topbar',
         children: [
-          jsx('span', {
-            className: 'flex size-8 items-center justify-center rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-bg-elevated)',
-            children: jsx(Codicon, { name: 'layout', size: '0.95rem' })
-          }, 'icon'),
           jsxs('div', {
-            className: 'min-w-0 flex-1',
+            className: 'flex min-w-0 items-center gap-2.5',
             children: [
-              jsx('h1', { className: 'text-sm font-semibold tracking-tight', children: '多会话监控室' }, 'title'),
-              jsx('p', { className: 'text-[0.65rem] text-(--ui-text-tertiary)', children: '固定 4 个卡座，新的活跃会话自动补入空位' }, 'description')
+              jsx('span', {
+                className: 'flex size-9 items-center justify-center rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-600',
+                children: jsx(Codicon, { name: 'layout', size: '1rem' })
+              }, 'icon'),
+              jsxs('div', {
+                className: 'min-w-0',
+                children: [
+                  jsxs('h1', {
+                    className: 'flex items-center gap-2 text-base font-bold tracking-wide text-slate-900',
+                    children: [
+                      jsx('span', { children: '多会话监控室' }, 'title'),
+                      jsxs('span', {
+                        className: 'codex-monitor-live',
+                        children: [
+                          jsx('span', { className: 'codex-monitor-live-dot' }, 'dot'),
+                          jsx('span', { children: 'LIVE 实时监控中' }, 'label')
+                        ]
+                      }, 'live')
+                    ]
+                  }, 'heading'),
+                  jsx('p', { className: 'text-xs text-slate-500', children: '动态并发流 · 活跃会话实时调度 · 支持弹性多窗口平铺与扩容' }, 'description')
+                ]
+              }, 'copy')
             ]
-          }, 'copy'),
-          failedSources ? jsx('span', { className: 'text-[0.65rem] text-(--ui-text-quaternary)', title: '部分会话来源当前不可用', children: `${failedSources} 个来源不可用` }, 'failed') : null,
-          jsx('span', { className: 'rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-elevated) px-2 py-1 text-[0.65rem] tabular-nums', children: `${occupiedCount} / ${MONITOR_SESSION_LIMIT}` }, 'count'),
-          jsx(Button, {
-            'aria-label': '在监控室新建会话',
-            className: 'size-8',
-            onClick: () => setCreateOpen(true),
-            size: 'icon-xs',
-            title: '新建会话',
-            variant: 'ghost',
-            children: jsx(Codicon, { name: 'add', size: '0.85rem' })
-          }, 'create'),
-          jsx(Button, {
-            'aria-label': '刷新多会话看板',
-            className: 'size-8',
-            onClick: refresh,
-            size: 'icon-xs',
-            title: '刷新',
-            variant: 'ghost',
-            children: jsx(Codicon, { name: 'refresh', size: '0.85rem', spinning: sessionsQuery.isFetching })
-          }, 'refresh')
+          }, 'brand'),
+          jsxs('div', {
+            className: 'flex shrink-0 items-center gap-2',
+            children: [
+              failedSources ? jsx('span', { className: 'text-[0.65rem] text-slate-400', title: '部分会话来源当前不可用', children: `${failedSources} 个来源不可用` }, 'failed') : null,
+              jsx(MonitorQueueMenu, { onOpenDialog: () => setQueueOpen(true), queue }, 'queue'),
+              jsx('span', { className: 'rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs text-slate-600', children: `自动轮询: ${MONITOR_REFRESH_MS / 1000}s` }, 'poll'),
+              jsx(MonitorLayoutSwitch, { layout, onChange: value => persistPrefs({ monitorLayout: value }) }, 'layout'),
+              jsx(Button, {
+                'aria-label': '在监控室新建会话',
+                onClick: () => setCreateOpen(true),
+                size: 'xs',
+                title: '新建会话',
+                children: jsxs('span', { className: 'inline-flex items-center gap-1', children: [jsx(Codicon, { name: 'add', size: '0.8rem' }, 'icon'), jsx('span', { children: '新建会话' }, 'label')] })
+              }, 'create'),
+              jsx(Button, {
+                'aria-label': '刷新多会话看板',
+                className: 'size-8',
+                onClick: refresh,
+                size: 'icon-xs',
+                title: '刷新',
+                variant: 'ghost',
+                children: jsx(Codicon, { name: 'refresh', size: '0.85rem', spinning: sessionsQuery.isFetching })
+              }, 'refresh')
+            ]
+          }, 'actions')
         ]
       }, 'header'),
       sessionsQuery.isLoading && sourceGroups.length === 0
@@ -3630,15 +5936,49 @@ function SessionMonitorPage() {
           ? jsx(ErrorState, { className: 'min-h-0 flex-1', description: '暂时无法读取跨网关会话。', title: '监控室不可用', children: jsx(Button, { onClick: refresh, size: 'xs', variant: 'ghost', children: '重试' }) }, 'error')
           : jsx('main', {
               className: 'codex-monitor-grid',
-              'data-seat-count': String(MONITOR_SESSION_LIMIT),
-              children: slots.map((entry, index) => entry
-                ? jsx(MonitorSessionCard, {
-                    appearance: prefs.projectAppearance || {},
-                    entry,
-                    slotIndex: index
-                  }, `monitor-slot:${index}`)
-                : jsx(MonitorEmptySlot, { index }, `monitor-slot:${index}`))
+              'data-layout': layout,
+              'data-seat-count': String(occupiedCount),
+              children: [
+                ...slots.map((entry, index) => jsx(MonitorSessionCard, {
+                  appearance: prefs.projectAppearance || {},
+                  entry,
+                  onDismiss: dismiss,
+                  slotIndex: index
+                }, entry.key)),
+                jsx(MonitorNewSessionTile, {
+                  onCreate: () => setCreateOpen(true),
+                  onQueue: () => {
+                    if (queue.length > 0) {
+                      setQueueOpen(true)
+                    } else {
+                      host.notify({ kind: 'info', message: '当前没有待命队列会话。' })
+                    }
+                  },
+                  queueCount: queue.length
+                }, 'new-session')
+              ]
             }, 'grid'),
+      jsxs('footer', {
+        className: 'codex-monitor-footer',
+        children: [
+          jsxs('div', {
+            className: 'flex items-center gap-4',
+            children: [
+              jsxs('span', { className: 'inline-flex items-center gap-1.5 text-slate-800', children: [jsx('span', { className: 'codex-monitor-live-dot' }, 'dot'), jsx('span', { children: '调度引擎: 正常' }, 'label')] }, 'engine'),
+              jsx('span', { children: `当前活跃: ${occupiedCount} 实例` }, 'active'),
+              jsx('span', { children: `队列待命中: ${queue.length}` }, 'queue'),
+              jsx('span', { children: '自动调度策略: 弹性负载与优先级唤醒' }, 'policy')
+            ]
+          }, 'left'),
+          jsxs('span', { children: ['Overlook Monitor', 'UTC+8', clock].join(' · ') }, 'brand')
+        ]
+      }, 'status'),
+      jsx(MonitorQueueSelectDialog, {
+        onOpenChange: setQueueOpen,
+        onSelect: park,
+        open: queueOpen,
+        queue
+      }, 'queue-dialog'),
       jsx(MonitorNewSessionDialog, {
         onCreated: refresh,
         onOpenChange: setCreateOpen,
@@ -4390,6 +6730,7 @@ export default {
     gatewaySessionStorageOwner = ctx
     $gatewaySessionPrefs.set(readGatewaySessionPreferences())
     ctx.onDispose(subscribeGatewaySessionEvents())
+    connectMobileBridge()
 
     ctx.register({
       id: 'theme',
@@ -4419,6 +6760,13 @@ export default {
       },
       order: 85,
       render: () => jsx(GatewaySessionsPane, {})
+    })
+
+    ctx.register({
+      id: 'mobile-bridge',
+      area: STATUSBAR_AREAS.right,
+      order: 85,
+      render: () => jsx(GatewayMobileChip, {})
     })
 
     ctx.register({

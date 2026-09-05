@@ -36,8 +36,9 @@ function extractFunction(name) {
 
 const context = {
   EXTERNAL_SESSION_SOURCES: new Set(['telegram', 'discord', 'slack', 'whatsapp']),
-  MONITOR_SESSION_LIMIT: 4,
-  MONITOR_TRANSCRIPT_LIMIT: 48
+  MONITOR_TRANSCRIPT_LIMIT: 120,
+  MONITOR_LAYOUTS: ['tile', 'compact', 'list'],
+  MONITOR_KEY_LIST_MAX: 200
 }
 vm.createContext(context)
 vm.runInContext(
@@ -46,9 +47,18 @@ vm.runInContext(
     'sessionActive',
     'sessionIsExternalChannel',
     'sessionActivityValue',
+    'normalizeStringKeyList',
     'monitorSessionCandidates',
+    'monitorEligibleSessions',
+    'monitorDisplayedCandidates',
+    'monitorQueueCandidates',
+    'monitorHideSessionKeys',
+    'monitorParkSessionKeys',
+    'normalizeMonitorLayout',
     'monitorSessionEntries',
     'stabilizeMonitorSlotKeys',
+    'monitorSessionStatusLabel',
+    'monitorSessionIndexLabel',
     'monitorScrollToBottom',
     'monitorContentText',
     'monitorMessageText',
@@ -56,10 +66,15 @@ vm.runInContext(
     'monitorVisibleMessages',
     'monitorMessageIsToolActivity',
     'monitorWallMessages',
+    'monitorToolCallLabel',
+    'monitorThinkingText',
+    'monitorMobileActivityKind',
+    'monitorSubagentText',
+    'monitorMobileMessages',
     'routeTargetProfile',
     'sessionRoute',
     'monitorTranscriptRequest'
-  ].map(extractFunction).join('\n')}\nglobalThis.api = { monitorSessionCandidates, monitorSessionEntries, stabilizeMonitorSlotKeys, monitorScrollToBottom, monitorVisibleMessages, monitorWallMessages, monitorTranscriptRequest, normalizeMonitorTranscript }`,
+  ].map(extractFunction).join('\n')}\nglobalThis.api = { monitorSessionCandidates, monitorSessionEntries, monitorEligibleSessions, monitorDisplayedCandidates, monitorQueueCandidates, monitorHideSessionKeys, monitorParkSessionKeys, normalizeMonitorLayout, stabilizeMonitorSlotKeys, monitorSessionStatusLabel, monitorSessionIndexLabel, monitorScrollToBottom, monitorVisibleMessages, monitorWallMessages, monitorMobileMessages, monitorTranscriptRequest, normalizeMonitorTranscript }`,
   context
 )
 const entries = context.api.monitorSessionEntries
@@ -97,10 +112,10 @@ const projects = [
   }
 ]
 
-const result = JSON.parse(JSON.stringify(entries(projects, 99)))
-assert.equal(result.length, 4, 'monitor hard-caps the wall at four sessions')
-assert.deepEqual(result.map(entry => entry.session.id), ['a-new', 'a-new', 'a-mid', 'a-fourth'], 'active sessions rank by latest activity across gateways')
-assert.deepEqual(result.map(entry => entry.project.key), ['a::alpha', 'b::remote', 'a::beta', 'a::beta'], 'same stored id on two gateways stays isolated')
+const result = JSON.parse(JSON.stringify(entries(projects)))
+assert.equal(result.length, 6, 'monitor shows every eligible active session instead of a four-seat cap')
+assert.deepEqual(result.map(entry => entry.session.id), ['a-new', 'a-new', 'a-mid', 'a-fourth', 'a-fifth', 'a-old'], 'active sessions rank by latest activity across gateways')
+assert.deepEqual(result.map(entry => entry.project.key), ['a::alpha', 'b::remote', 'a::beta', 'a::beta', 'a::beta', 'a::alpha'], 'same stored id on two gateways stays isolated')
 assert.equal(result.some(entry => entry.session.id === 'idle'), false, 'inactive sessions never occupy a monitor tile')
 assert.equal(result.some(entry => entry.session.id === 'telegram-live'), false, 'Telegram sessions are excluded from the monitor')
 assert.equal(result.some(entry => entry.session.id === 'slack-live'), false, 'external source matching is case-insensitive')
@@ -108,24 +123,57 @@ assert.equal(result.some(entry => entry.session.id === 'telegram-handoff'), fals
 assert.equal(result.filter(entry => entry.project.key === 'a::alpha' && entry.session.id === 'a-new').length, 1, 'duplicate rows inside one project collapse to one tile')
 
 const allCandidates = JSON.parse(JSON.stringify(context.api.monitorSessionCandidates(projects)))
-assert.deepEqual(allCandidates.map(entry => entry.session.id), ['a-new', 'a-new', 'a-mid', 'a-fourth', 'a-fifth', 'a-old'], 'the seat allocator can see eligible sessions beyond the first four')
-const initialSlots = JSON.parse(JSON.stringify(context.api.stabilizeMonitorSlotKeys([], allCandidates, 4)))
-assert.deepEqual(initialSlots, allCandidates.slice(0, 4).map(entry => entry.key), 'the initial load fills four seats in candidate order')
+assert.deepEqual(allCandidates.map(entry => entry.session.id), ['a-new', 'a-new', 'a-mid', 'a-fourth', 'a-fifth', 'a-old'], 'every eligible active session is a wall candidate')
+const initialSlots = JSON.parse(JSON.stringify(context.api.stabilizeMonitorSlotKeys([], allCandidates)))
+assert.deepEqual(initialSlots, allCandidates.map(entry => entry.key), 'the initial load seats every eligible session in candidate order')
+assert.equal(initialSlots.length, 6, 'the wall is not padded to four empty seats')
 
-const reorderedCandidates = [allCandidates[3], allCandidates[1], allCandidates[0], allCandidates[2]]
-const reorderedSlots = JSON.parse(JSON.stringify(context.api.stabilizeMonitorSlotKeys(initialSlots, reorderedCandidates, 4)))
+const reorderedCandidates = [allCandidates[3], allCandidates[1], allCandidates[0], allCandidates[2], allCandidates[5], allCandidates[4]]
+const reorderedSlots = JSON.parse(JSON.stringify(context.api.stabilizeMonitorSlotKeys(initialSlots, reorderedCandidates)))
 assert.deepEqual(reorderedSlots, initialSlots, 'activity updates never reorder occupied seats')
 
 const removedKey = initialSlots[1]
-const survivingCandidates = allCandidates.slice(0, 4).filter(entry => entry.key !== removedKey)
-const seatsAfterRemoval = JSON.parse(JSON.stringify(context.api.stabilizeMonitorSlotKeys(initialSlots, survivingCandidates, 4)))
-assert.deepEqual(seatsAfterRemoval, [initialSlots[0], '', initialSlots[2], initialSlots[3]], 'removing one session clears only its original seat')
+const survivingCandidates = allCandidates.filter(entry => entry.key !== removedKey)
+const seatsAfterRemoval = JSON.parse(JSON.stringify(context.api.stabilizeMonitorSlotKeys(initialSlots, survivingCandidates)))
+assert.deepEqual(seatsAfterRemoval, [initialSlots[0], initialSlots[2], initialSlots[3], initialSlots[4], initialSlots[5]], 'removing one session compacts the flow without leaving a hole')
 
-const newcomer = allCandidates[4]
-const seatsAfterArrival = JSON.parse(JSON.stringify(context.api.stabilizeMonitorSlotKeys(seatsAfterRemoval, [...survivingCandidates, newcomer], 4)))
-assert.deepEqual(seatsAfterArrival, [initialSlots[0], newcomer.key, initialSlots[2], initialSlots[3]], 'a newly eligible session takes the first empty seat without shifting survivors')
-const fullSeatsAfterAnotherArrival = JSON.parse(JSON.stringify(context.api.stabilizeMonitorSlotKeys(seatsAfterArrival, [...allCandidates, { key: 'new::session' }], 4)))
-assert.deepEqual(fullSeatsAfterAnotherArrival, seatsAfterArrival, 'a newcomer cannot evict any session while all four seats are occupied')
+const newcomer = { key: 'new::session', project: { key: 'x' }, session: { id: 'brand-new' } }
+const seatsAfterArrival = JSON.parse(JSON.stringify(context.api.stabilizeMonitorSlotKeys(seatsAfterRemoval, [...survivingCandidates, newcomer])))
+assert.deepEqual(seatsAfterArrival, [...seatsAfterRemoval, 'new::session'], 'a newly eligible session appends without shifting survivors')
+
+assert.equal(context.api.monitorSessionIndexLabel(0), '01')
+assert.equal(context.api.monitorSessionIndexLabel(11), '12')
+assert.equal(context.api.monitorSessionStatusLabel({ is_active: true }, [{ kind: 'status' }]), '执行中')
+assert.equal(context.api.monitorSessionStatusLabel({ is_active: true }, [{ message: { role: 'user' } }]), '对话中')
+assert.equal(context.api.monitorSessionStatusLabel({ is_active: false }, []), '就绪待命中')
+assert.equal(context.api.normalizeMonitorLayout('list'), 'list')
+assert.equal(context.api.normalizeMonitorLayout('weird'), 'tile')
+
+const eligible = JSON.parse(JSON.stringify(context.api.monitorEligibleSessions(projects)))
+assert.equal(eligible.some(entry => entry.session.id === 'idle'), true, 'the waiting queue can see idle desktop sessions')
+assert.equal(eligible.some(entry => entry.session.id === 'telegram-live'), false, 'external sessions stay out of the queue')
+
+const displayed = JSON.parse(JSON.stringify(context.api.monitorDisplayedCandidates(projects, [], [])))
+assert.equal(displayed.length, 6, 'the wall still auto-seats every active session')
+assert.equal(displayed.some(entry => entry.session.id === 'idle'), false, 'idle sessions wait in the queue until pulled')
+
+const hiddenKey = displayed[0].key
+const afterHide = JSON.parse(JSON.stringify(context.api.monitorDisplayedCandidates(projects, [hiddenKey], [])))
+assert.equal(afterHide.some(entry => entry.key === hiddenKey), false, 'dismissing a card removes it from the wall')
+const queue = JSON.parse(JSON.stringify(context.api.monitorQueueCandidates(projects, afterHide.map(entry => entry.key))))
+assert.equal(queue.some(entry => entry.key === hiddenKey), true, 'a dismissed live session lands in the waiting queue')
+assert.equal(queue.some(entry => entry.session.id === 'idle'), true, 'idle desktop sessions wait in the queue')
+
+const idleKey = eligible.find(entry => entry.session.id === 'idle').key
+const parked = JSON.parse(JSON.stringify(context.api.monitorDisplayedCandidates(projects, [], [idleKey])))
+assert.equal(parked.some(entry => entry.session.id === 'idle'), true, 'pulling a queued session parks it on the wall')
+
+const hiddenState = JSON.parse(JSON.stringify(context.api.monitorHideSessionKeys([], [idleKey], hiddenKey)))
+assert.deepEqual(hiddenState.monitorHiddenKeys, [hiddenKey])
+assert.deepEqual(hiddenState.monitorParkedKeys, [idleKey])
+const parkedState = JSON.parse(JSON.stringify(context.api.monitorParkSessionKeys([hiddenKey], [], idleKey)))
+assert.deepEqual(parkedState.monitorHiddenKeys, [hiddenKey])
+assert.deepEqual(parkedState.monitorParkedKeys, [idleKey])
 
 const fakeScroller = { scrollHeight: 640, scrollTop: 0 }
 assert.equal(context.api.monitorScrollToBottom(fakeScroller), true, 'scroll helper accepts a mounted transcript')
@@ -185,16 +233,54 @@ assert.deepEqual(completedTurn.map(row => [row.message.role, row.text]), [
   ['assistant', 'Tests passed.']
 ], 'a completed assistant reply is not replaced by the working status')
 
+const multiTurnWithPreview = JSON.parse(JSON.stringify(context.api.monitorWallMessages({
+  messages: [
+    { id: 1, role: 'user', content: 'Ancient first instruction' },
+    { id: 2, role: 'assistant', content: 'Ancient reply' },
+    { id: 80, role: 'user', content: 'Latest instruction from today' },
+    { id: 81, role: 'assistant', content: 'Latest reply from today' }
+  ]
+}, { preview: 'Ancient first instruction' }, 2)))
+assert.equal(multiTurnWithPreview.some(row => row.text === 'Ancient first instruction'), false, 'multi-turn conversations must show the latest user turn, never the ancient preview')
+
+const mobileLive = JSON.parse(JSON.stringify(context.api.monitorMobileMessages({
+  messages: [
+    { id: 1, role: 'user', content: '查一下构建' },
+    { id: 2, role: 'assistant', reasoning_content: '先读测试输出', content: '' },
+    { id: 3, role: 'tool', tool_name: 'terminal', context: 'npm test' },
+    { id: 4, role: 'assistant', content: '测试通过。' }
+  ]
+}, { preview: '查一下构建' }, 40)))
+assert.deepEqual(mobileLive.map(row => [row.kind || row.role, row.tool || '', row.text]), [
+  ['user', '', '查一下构建'],
+  ['thinking', '', '先读测试输出'],
+  ['tool', 'terminal', 'npm test'],
+  ['assistant', '', '测试通过。']
+], 'mobile timeline keeps thinking, tool calls, and the assistant reply instead of collapsing them')
+assert.equal(mobileLive.some(row => row.text === '正在执行任务…'), false, 'mobile must not inject a working-status row')
+
+const mobileActivity = JSON.parse(JSON.stringify(context.api.monitorMobileMessages({
+  messages: [
+    { id: 1, role: 'user', content: '派两个子代理' },
+    { id: 2, role: 'tool', tool_name: 'todo_write', context: '- [ ] 读代码\n- [x] 写测试' },
+    { id: 3, role: 'assistant', display_kind: 'async_delegation_complete', display_metadata: { task_count: 2, completed_count: 2 }, content: '' }
+  ]
+}, {}, 40)))
+assert.equal(mobileActivity.some(row => row.kind === 'todo'), true, 'todo tool rows stay visible on mobile')
+assert.equal(mobileActivity.some(row => row.kind === 'subagent'), true, 'subagent/delegation rows stay visible on mobile')
+assert.ok(source.includes('monitorMobileMessages({ messages: raw }'), 'mobile bridge serializes the full live timeline, not the compact wall')
+assert.equal(multiTurnWithPreview.some(row => row.text === 'Latest instruction from today'), true, 'latest user instruction remains visible')
+
 const request = JSON.parse(JSON.stringify(context.api.monitorTranscriptRequest(
   { route: routeB },
   { id: 'stored id' }
 )))
 assert.deepEqual(request, {
   connectionId: 'b',
-  path: '/api/sessions/stored%20id/messages?limit=48&offset=0&order=latest&include_compacted=true&profile=worker',
+  path: '/api/sessions/stored%20id/messages?limit=120&offset=0&order=latest&include_compacted=true&profile=worker',
   profile: 'worker',
   timeoutMs: 15_000
-}, 'transcript reads stay on the exact owning gateway/profile')
+}, 'transcript reads stay on the exact owning gateway/profile with 120 message limit')
 
 // Production wiring: a dedicated workspace tab plus a route fallback for older
 // Desktop builds. The monitor and stored-session tabs must never replace one
@@ -252,14 +338,54 @@ assert.deepEqual(JSON.parse(JSON.stringify(openCalls)), [
 
 assert.match(source, /className: 'codex-monitor-grid'/, 'active sessions render in the monitoring grid')
 const monitorPageSource = extractFunction('SessionMonitorPage')
-assert.match(monitorPageSource, /useState\(\(\) => Array\(MONITOR_SESSION_LIMIT\)\.fill\(''\)\)/, 'monitor owns four persistent seat identities')
-assert.match(monitorPageSource, /monitorSessionCandidates\(projects\)/, 'monitor keeps every eligible candidate available for future empty seats')
-assert.match(monitorPageSource, /stabilizeMonitorSlotKeys\(current, candidates, MONITOR_SESSION_LIMIT\)/, 'candidate refreshes reconcile without moving occupied seats')
-assert.match(monitorPageSource, /slots\.map\(\(entry, index\)/, 'the wall renders by fixed seat index rather than compacting entries')
-assert.match(monitorPageSource, /MonitorEmptySlot/, 'an unoccupied seat remains visible in place')
-assert.doesNotMatch(monitorPageSource, /monitorSessionEntries\(projects/, 'the live wall is not rebuilt from a newly sorted top-four slice')
-assert.match(source, /function MonitorEmptySlot\(/, 'monitor has an explicit empty-seat renderer')
-assert.doesNotMatch(source, /\.codex-monitor-grid\[data-count="[12]"\]/, 'one or two sessions no longer collapse the four-seat geometry')
+assert.match(monitorPageSource, /useState\(\(\) => \[\]\)/, 'monitor starts with an empty flow, not four reserved seats')
+assert.match(monitorPageSource, /monitorDisplayedCandidates\(projects, hiddenKeys, parkedKeys\)/, 'monitor keeps every eligible candidate available for the wall')
+assert.match(monitorPageSource, /stabilizeMonitorSlotKeys\(current, candidates\)/, 'candidate refreshes reconcile without moving occupied seats')
+assert.doesNotMatch(monitorPageSource, /MONITOR_SESSION_LIMIT/, 'the live wall no longer consults a four-seat cap')
+assert.match(monitorPageSource, /MonitorNewSessionTile/, 'the flow ends with an explicit new-session tile')
+assert.doesNotMatch(monitorPageSource, /MonitorEmptySlot/, 'unbounded flow does not reserve empty numbered seats')
+assert.doesNotMatch(monitorPageSource, /monitorSessionEntries\(projects/, 'the live wall is not rebuilt from a newly sorted slice')
+assert.match(source, /function MonitorNewSessionTile\(/, 'monitor has an explicit new-session tile')
+assert.match(source, /开启新会话窗口/, 'the add tile matches the Stitch label')
+assert.doesNotMatch(source, /固定 4 个卡座/, 'header copy no longer advertises four fixed seats')
+assert.doesNotMatch(source, /const MONITOR_SESSION_LIMIT/, 'the four-seat constant is gone')
+assert.match(source, /grid-template-columns:repeat\(auto-fill/, 'the wall uses a wrapping auto-fill grid')
+assert.doesNotMatch(source, /grid-template-rows:repeat\(2/, 'the wall is no longer a fixed 2x2')
+assert.match(source, /平铺流/, 'header exposes the tiled flow layout')
+assert.match(source, /自适应网格/, 'header exposes the compact grid layout')
+assert.match(source, /列表/, 'header exposes the list layout')
+assert.match(source, /待命队列/, 'header exposes the waiting queue')
+assert.match(source, /队列待命中/, 'footer reports the waiting-queue count')
+assert.match(source, /从待命队列接入/, 'the add tile can pull a queued session')
+assert.match(source, /function MonitorQueueSelectDialog\(/, 'monitor owns a waiting-queue selection dialog')
+assert.match(monitorPageSource, /MonitorQueueSelectDialog/, 'SessionMonitorPage mounts the queue dialog')
+assert.match(monitorPageSource, /setQueueOpen\(true\)/, 'clicking queue actions opens the selection dialog')
+assert.match(source, /const MONITOR_TRANSCRIPT_LIMIT = 120/, 'monitor transcript limit is widened to 120 to capture recent turns')
+assert.match(source, /user-select:text!important/, 'message text explicitly allows text selection')
+assert.match(source, /data-selectable-text/, 'transcript container enables native text selection')
+assert.match(extractFunction('MonitorSessionComposer'), /onPaste/, 'composer supports pasting image files from clipboard')
+assert.match(extractFunction('MonitorSessionComposer'), /立即发送队列/, 'composer supports sending queued messages immediately')
+assert.match(source, /stopMonitorSessionTask/, 'monitor provides session interruption helper')
+assert.match(extractFunction('MonitorSessionComposer'), /'停止任务'/, 'send button becomes stop button during execution')
+assert.match(source, /空白会话/, 'the add tile can open a blank create dialog')
+assert.match(source, /移出监控室/, 'cards can leave the wall without closing the session')
+assert.match(extractFunction('MonitorSessionComposer'), /'停止任务'/, 'send button becomes stop button during execution')
+assert.match(extractFunction('MonitorCardModelPicker'), /placeholder: '搜索模型名称或提供商…'/, 'model picker supports search')
+assert.match(extractFunction('MonitorSessionComposer'), /MONITOR_IMAGE_ACCEPT/, 'card composer can attach images')
+assert.match(monitorPageSource, /data-layout/, 'the grid honors the selected layout')
+assert.match(monitorPageSource, /normalizeMonitorLayout/, 'layout values are gated to the Stitch modes')
+assert.match(monitorPageSource, /monitorQueueCandidates/, 'the page derives a waiting queue from sessions not on the wall')
+assert.match(monitorPageSource, /monitorDisplayedCandidates/, 'the wall can include pulled idle sessions and skip dismissed ones')
+assert.match(source, /function MonitorSessionComposer\(/, 'each card has a compact composer')
+assert.match(source, /function submitMonitorPrompt\(/, 'card send uses a verified prompt helper')
+assert.match(extractFunction('MonitorSessionCard'), /MonitorSessionComposer/, 'cards include the compact composer')
+assert.match(extractFunction('MonitorSessionCard'), /monitorSessionStatusLabel/, 'cards expose a session-state pill')
+assert.match(extractFunction('MonitorMessageRow'), /codex-monitor-message-user/, 'user rows stay right-aligned bubbles')
+assert.match(extractFunction('MonitorMessageRow'), /MonitorImageThumbnail/, 'message rows render image thumbnails')
+assert.match(source, /function MonitorImageThumbnail\(/, 'monitor defines image thumbnail component')
+assert.match(source, /extractMonitorMessageImages/, 'message parser extracts image paths and strips directives')
+assert.match(source, /codex-monitor-lightbox/, 'monitor supports lightbox image zoom')
+assert.doesNotMatch(source, /\.codex-monitor-grid\[data-count="[12]"\]/, 'one or two sessions no longer collapse the geometry')
 assert.match(source, /data-monitor-slot/, 'each card exposes its stable seat index')
 assert.match(source, /function openSessionMonitorWorkspace\(/, 'monitor owns one workspace-tab opener')
 assert.match(source, /host\.openWorkspace\('overlook-monitor'/, 'monitor opens through the public workspace-tab API')
